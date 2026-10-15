@@ -1,0 +1,5 @@
+# Runtime dependencies for evaluation and array-based dataset loading.
+numpy
+torch
+torchvision
+PyYAML

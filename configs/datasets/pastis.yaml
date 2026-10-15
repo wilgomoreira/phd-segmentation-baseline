@@ -1,0 +1,21 @@
+# PASTIS single-date configuration. Resolve all nulls against the local copy
+# and protocol decisions before real-data use; no data are downloaded by code.
+dataset: pastis
+root: null
+folds: null  # Optional subset; official folds are not automatically train/val/test.
+train_folds: null  # Required for the training pipeline; prespecify and keep disjoint.
+validation_folds: null  # Required for model selection; do not include test folds.
+sentinel: S2
+image_layout: TCHW  # Official array layout.
+channels: 10  # Official PASTIS S2 input; no RGB reduction.
+single_date:
+  strategy: null  # Required: index or nearest_date.
+  value: null     # Must be prespecified without consulting target labels/test outcomes.
+normalization:
+  scale: null
+  mean: null
+  std: null
+ignore_index: null  # Verify target void encoding before setting.
+tiling:
+  size: null
+  stride: null

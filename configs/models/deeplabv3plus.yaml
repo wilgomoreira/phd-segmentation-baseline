@@ -1,0 +1,11 @@
+name: deeplabv3plus_resnet50
+architecture: DeepLabV3+
+backbone: ResNet-50
+in_channels_by_dataset:
+  pastis: 10
+  five_billion_pixels: 4
+num_classes: null  # Set only after dataset label conventions are verified.
+pretrained: false  # No automatic weight downloads.
+output_stride: 16
+aspp_rates: [6, 12, 18]
+decoder_channels: 256

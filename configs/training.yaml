@@ -1,0 +1,31 @@
+# Complete all null experiment fields before starting a real run.
+seed: null
+deterministic: true
+device: auto  # auto selects CUDA only when available; explicit cpu/cuda are allowed.
+dataset_config: null  # Path to one configured file in configs/datasets/.
+model_config: null  # Path to one configured file in configs/models/.
+num_classes: null  # Must match the verified label mapping.
+epochs: null
+data:
+  batch_size: null
+  num_workers: 0
+  pin_memory: false  # Enable only when using CUDA and host-memory pinning is desired.
+loss:
+  name: CrossEntropyLoss
+  ignore_index: null  # Optional; combined with dataset valid_mask.
+optimizer:
+  name: AdamW
+  learning_rate: null
+  weight_decay: null
+scheduler:
+  name: null  # null/none, cosine, step, or plateau.
+  parameters: {}  # See docs/training_protocol.md for per-scheduler arguments.
+metrics:
+  ece_bins: 15
+  adaptive_ece_bins: 15
+  storage: memory  # Exact ranking metrics; use disk for large validation sets.
+validation:
+  full_metrics_every_epochs: null  # Optional interval; null disables periodic ranking/calibration metrics.
+  full_metrics_at_end: true  # Always run exact full metrics on the final epoch when true.
+checkpoint_dir: null
+resume: null

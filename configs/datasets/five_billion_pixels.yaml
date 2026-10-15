@@ -1,0 +1,27 @@
+# Five-Billion-Pixels manifest-driven input. Native files are never discovered
+# by guessed names; create a manifest after confirming the released package.
+dataset: five_billion_pixels
+manifest: null
+root: null
+splits:
+  train: null  # Explicit manifest split label; must not name test.
+  validation: null  # Explicit validation split label for model selection.
+channel_count: 4
+band_order: null  # Confirm from the supplied package; source order is preserved.
+image_layout: null  # Required per manifest row: CHW or HWC.
+normalization:
+  scale: null
+  mean: null
+  std: null
+ignore_index: null  # Verify the released target encoding before setting.
+spatial_split:
+  coordinate_crs: null  # Must be projected; units must match block_size.
+  x_key: null
+  y_key: null
+  block_size: null
+  fractions: null
+  seed: null
+  guard_cells: null
+tiling:
+  size: null
+  stride: null

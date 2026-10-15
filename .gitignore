@@ -1,0 +1,70 @@
+# Local datasets and downloaded data, while retaining scaffold markers.
+/data/**
+!/data/**/
+!/data/**/.gitkeep
+
+# Checkpoints, pretrained weights, exports, and generated experiment outputs.
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.engine
+/outputs/**
+!/outputs/**/
+!/outputs/**/.gitkeep
+/runs/
+/wandb/
+/lightning_logs/
+/tensorboard/
+
+# Logs and temporary/editor swap files.
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*~
+
+# Python bytecode, test and tool caches.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.tox/
+.nox/
+htmlcov/
+.coverage
+coverage.xml
+
+# Virtual environments.
+.venv/
+venv/
+env/
+ENV/
+
+# Credentials and local environment files.
+.env
+.env.*
+!.env.example
+.aws/
+.ssh/
+.npmrc
+.pypirc
+credentials*
+secrets*
+*.pem
+*.key
+*.p12
+
+# IDE and operating-system local settings.
+.vscode/
+.idea/
+.vs/
+*.code-workspace
+.DS_Store
+Thumbs.db
+Desktop.ini
