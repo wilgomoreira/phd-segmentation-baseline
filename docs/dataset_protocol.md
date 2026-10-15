@@ -16,9 +16,9 @@ Both loaders return a dictionary containing:
 - `metadata`: original IDs, fold/split fields, source metadata, and tile/date
   selection fields where available.
 
-Validity is all true unless an `ignore_index` is explicitly configured or a
-manifest row supplies an explicit valid-mask file. No label value is treated
-as void by default. Class remapping and label changes are not performed.
+Validity is all true unless the dataset defines a void label, an
+`ignore_index` is explicitly configured, or a manifest row supplies an
+explicit valid-mask file. Class remapping and label changes are not performed.
 
 `Normalization` supports an explicit multiplicative scale and optional
 per-channel mean/std. No statistics or scaling are defaulted. Mean and std
@@ -45,9 +45,13 @@ indexes by `ID_PATCH`, uses the `Fold` metadata, reads image arrays from
 `DATA_S2/S2_{ID_PATCH}.npy` in `[T,C,H,W]` order, and semantic masks from
 `ANNOTATIONS/TARGET_{ID_PATCH}.npy`. The official benchmark defines five folds;
 these fold IDs are preserved as metadata and are not relabeled train,
-validation, or test by this project. The paper describes 18 crop types plus
-background and a void label for patches, but this implementation does not
-assume the numeric void value or remap classes.
+validation, or test by this project. The official target arrays have shape
+`[3,H,W]`; the official benchmark dataloader selects `TARGET[0]` as the
+per-pixel semantic class map. Its source does not assign meanings needed by
+this semantic loader to planes 1 and 2, so they are left unused. Semantic IDs
+are 0 for background, 1–18 for crop classes, and 19 for void. Background is a
+valid class; void pixels are excluded from semantic loss/metrics via
+`valid_mask`. No class remapping is performed.
 
 `PastisSingleDateDataset` requires a `DateSelection`; there is no implicit
 first-date or test-derived choice. Supported strategies are:
@@ -148,7 +152,7 @@ unresolved. These values require the exact local release and experiment plan.
    data; state whether one common calendar date or one common sequence index
    is the scientific target.
 2. Inspect the downloaded PASTIS metadata and verify acquisition-array order,
-   void-label encoding, class-ID convention, and intended fold use.
+   class IDs against the official release, and intended fold use.
 3. Obtain and inspect the exact Five-Billion-Pixels release; document its
    file/package format, band names/order, image and label axis order, label
    values, coordinate reference system, source-image IDs, and official split

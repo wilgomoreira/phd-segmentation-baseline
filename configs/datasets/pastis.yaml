@@ -15,7 +15,7 @@ normalization:
   scale: null
   mean: null
   std: null
-ignore_index: null  # Verify target void encoding before setting.
+ignore_index: null  # PASTIS void ID 19 is excluded; optional extra ignored class.
 tiling:
   size: null
   stride: null

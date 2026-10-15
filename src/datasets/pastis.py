@@ -13,6 +13,8 @@ import numpy as np
 from .base import ArrayManifestDataset
 from .preprocessing import Normalization, channel_first, load_array, resolve_relative
 
+PASTIS_VOID_LABEL = 19
+
 
 @dataclass(frozen=True)
 class DateSelection:
@@ -141,3 +143,38 @@ class PastisSingleDateDataset(ArrayManifestDataset):
         array = load_array(resolve_relative(self.base_dir, record["image"]), mmap=True)
         index, _ = self.selected_indices[record["patch_id"]]
         return channel_first(array[index], "CHW")
+
+    def _load_mask(self, record: dict) -> tuple[np.ndarray, np.ndarray]:
+        """Read the semantic plane from PASTIS's three-plane target array.
+
+        The official PASTIS benchmark dataloader defines its semantic target as
+        ``TARGET[0]``. The remaining planes are not needed for this semantic
+        segmentation interface and are deliberately left untouched.
+        """
+        path = resolve_relative(self.base_dir, record["mask"])
+        annotation = load_array(path, key=record.get("mask_key"), mmap=True)
+        if annotation.ndim != 3 or annotation.shape[0] != 3:
+            raise ValueError("PASTIS annotation must have shape [3,H,W]")
+        mask = annotation[0]
+        if not np.issubdtype(mask.dtype, np.integer):
+            raise TypeError("PASTIS semantic mask must contain integer class IDs")
+        if np.any((mask < 0) | (mask > 19)):
+            raise ValueError("PASTIS semantic class IDs must be in the range 0..19")
+
+        # Official PASTIS documentation defines ID 19 as void and excludes
+        # void pixels from semantic losses/metrics. ID 0 is valid background.
+        valid = mask != PASTIS_VOID_LABEL
+        if self.ignore_index is not None:
+            valid &= mask != self.ignore_index
+        valid_path = record.get("valid_mask")
+        if valid_path is not None:
+            explicit = load_array(
+                resolve_relative(self.base_dir, valid_path),
+                key=record.get("valid_mask_key"),
+                mmap=True,
+            )
+            explicit = np.squeeze(explicit)
+            if explicit.shape != mask.shape:
+                raise ValueError("explicit valid mask must match semantic mask dimensions")
+            valid &= explicit.astype(bool)
+        return mask, valid

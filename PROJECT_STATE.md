@@ -87,3 +87,16 @@ configuration.
   automatic pretrained initialization and use random weights.
 - Decide whether the DeepLabV3+ ASPP/decoder should use depthwise-separable
   convolutions; current implementation uses regular convolutions.
+
+## Linux infrastructure validation — 2026-10-15
+
+- Environment: Linux, Python 3.11.17, PyTorch 2.11.0+cu128, and NVIDIA RTX
+  2060 with 12 GB of VRAM.
+- Test suite: 39 tests passed.
+- Synthetic smoke tests used batch size 1, 128×128 patches, and three classes.
+  DeepLabV3+ with 10 input bands completed forward, cross-entropy loss,
+  backward, and an AdamW update; loss was 1.1233 and peak VRAM was 0.76 GB.
+  SegFormer-B1 with 4 input bands completed the same steps; loss was 1.0997
+  and peak VRAM was 0.27 GB.
+- These checks validate the Linux/CUDA infrastructure and synthetic model
+  execution only. Real datasets and full training have not yet been validated.

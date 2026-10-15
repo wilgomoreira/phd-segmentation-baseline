@@ -24,8 +24,10 @@ def _write_pastis_fixture(root):
             [np.full((10, 3, 4), 11, dtype=np.uint16), np.full((10, 3, 4), 55, dtype=np.uint16)]
         )
         np.save(root / "DATA_S2" / f"S2_{patch_id}.npy", image)
-        target = np.full((1, 3, 4), patch_id % 3, np.uint8)
-        target[0, 0, 0] = 1
+        semantic = np.full((3, 4), patch_id % 3, np.uint8)
+        semantic[0, 0] = 1
+        # Keep auxiliary source planes visibly different from class IDs.
+        target = np.stack((semantic, np.full((3, 4), 70), np.full((3, 4), 90))).astype(np.uint8)
         np.save(root / "ANNOTATIONS" / f"TARGET_{patch_id}.npy", target)
         features.append({
             "type": "Feature",
@@ -78,6 +80,43 @@ def test_pastis_tiling_and_invalid_date_index(tmp_path):
     assert not first["valid_mask"].all()
     with pytest.raises(IndexError, match="out of range"):
         PastisSingleDateDataset(tmp_path, date_selection=DateSelection("index", 99))
+
+
+def test_pastis_extracts_semantic_plane_and_keeps_background_valid(tmp_path):
+    _write_pastis_fixture(tmp_path)
+    semantic = np.array([[0, 1, 18, 19], [2, 3, 4, 5], [6, 7, 8, 9]], dtype=np.uint8)
+    annotation = np.stack((semantic, np.full((3, 4), 70), np.full((3, 4), 90)))
+    np.save(tmp_path / "ANNOTATIONS" / "TARGET_101.npy", annotation)
+    explicit = np.ones((3, 4), dtype=np.uint8)
+    explicit[0, 0] = 0
+    np.save(tmp_path / "valid.npy", explicit)
+
+    # Exercise the inherited explicit valid-mask contract on the native record.
+    ds = PastisSingleDateDataset(
+        tmp_path, date_selection=DateSelection("index", 0), folds=[1], ignore_index=19,
+    )
+    ds.records[0][0]["valid_mask"] = "valid.npy"
+    sample = ds[0]
+
+    assert torch.equal(sample["mask"], torch.from_numpy(semantic.astype(np.int64)))
+    assert not sample["valid_mask"][0, 0]  # explicit mask invalidates background pixel
+    assert sample["mask"][0, 0].item() == 0  # class 0 remains background, not void
+    assert sample["valid_mask"][0, 1]  # ordinary crop class remains valid
+    assert not sample["valid_mask"][0, 3]  # explicit ignore_index also excludes void
+
+    unconfigured = PastisSingleDateDataset(
+        tmp_path, date_selection=DateSelection("index", 0), folds=[1],
+    )[0]
+    assert unconfigured["valid_mask"][0, 0]  # background is valid by default
+    assert not unconfigured["valid_mask"][0, 3]  # official void ID is always excluded
+
+
+def test_pastis_rejects_non_native_annotation_shape(tmp_path):
+    _write_pastis_fixture(tmp_path)
+    np.save(tmp_path / "ANNOTATIONS" / "TARGET_101.npy", np.zeros((1, 3, 4), dtype=np.uint8))
+    ds = PastisSingleDateDataset(tmp_path, date_selection=DateSelection("index", 0), folds=[1])
+    with pytest.raises(ValueError, match=r"shape \[3,H,W\]"):
+        ds[0]
 
 
 def test_five_billion_manifest_preserves_four_channels_and_validity(tmp_path):
