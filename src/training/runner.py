@@ -148,6 +148,7 @@ def run(config_path: str | Path) -> list[dict[str, Any]]:
         scheduler=scheduler, metric_options=config.get("metrics") or {},
         full_metrics_every_epochs=(config.get("validation") or {}).get("full_metrics_every_epochs"),
         full_metrics_at_end=(config.get("validation") or {}).get("full_metrics_at_end", True),
+        early_stopping=config.get("early_stopping"),
     )
     if config.get("resume"):
         trainer.resume(config["resume"])

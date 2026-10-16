@@ -7,7 +7,7 @@ multiclass segmentation with the existing PASTIS or Five-Billion-Pixels loader,
 one of the existing model implementations, and the streaming evaluator. It
 constructs only **train** and **validation** datasets. There is deliberately no
 test-loader argument or test evaluation in the training pipeline. Validation
-mIoU selects `best.pt`; the test partition must remain untouched until model
+mIoU selects `best.pt` and drives optional Early Stopping; the test partition must remain untouched until model
 selection and configuration are complete.
 
 For PASTIS, use the five checked-in run configurations
@@ -94,9 +94,21 @@ source revision when available. If no Git revision is available, that field is
 null. Dependencies are reported, not installed or automatically pinned.
 
 At each completed epoch, `latest.pt` is atomically replaced and `best.pt` is
-updated only when validation mIoU strictly improves (ties keep the earlier
-checkpoint). Each checkpoint stores model, optimizer, optional scheduler,
-completed epoch index, full resolved configuration, best validation mIoU, and
+updated whenever checkpoint-selection mIoU strictly exceeds the prior raw
+maximum (ties keep the earlier checkpoint). Optional Early Stopping monitors
+only this same selection subset. Its first finite mIoU establishes the
+reference; a later score resets patience only when it is at least `min_delta`
+higher than the reference. Otherwise the consecutive non-improvement counter
+increases by one. With patience 15, training stops immediately after the 15th
+consecutive non-qualifying validation epoch. The epoch that exhausts patience
+is fully completed: the scheduler is stepped, and both latest and (if needed)
+best checkpoints are saved. `best.pt` tracks the highest raw mIoU even when an
+increase is smaller than `min_delta`; this separates checkpoint quality from
+the stopping threshold. The maximum epoch count is an upper bound.
+
+Each checkpoint stores model, optimizer, optional scheduler,
+completed epoch index, full resolved configuration, best validation mIoU,
+Early Stopping reference/counter/stopped state, and
 Python/NumPy/PyTorch/CUDA/DataLoader RNG state. Resume loads through CPU first so
 RNG and DataLoader generator state tensors remain CPU-resident; model and
 optimizer state is then copied to the active device. CUDA RNG is restored only
@@ -142,14 +154,17 @@ are settled.
 | `metrics.temp_dir` | Optional directory for disk-backed metric records. |
 | `validation.full_metrics_every_epochs` | Optional positive epoch interval for exact full validation metrics; null disables periodic full evaluation. |
 | `validation.full_metrics_at_end` | Run exact full validation metrics on the configured final epoch (default true). |
+| `early_stopping.enabled` | Enable stopping using checkpoint-selection mIoU only. |
+| `early_stopping.patience` | Consecutive non-qualifying validation epochs allowed before stopping. |
+| `early_stopping.min_delta` | Minimum absolute mIoU gain over the Early Stopping reference to reset patience. |
 | `checkpoint_dir` | Required output directory for checkpoints and epoch logs. |
 | `resume` | Optional path to a compatible latest or best checkpoint. |
 
 Dataset YAML parameters are documented in `docs/dataset_protocol.md`; model
 architecture/input parameters are documented in `docs/model_architectures.md`.
 Normalization values, ignore index, number of classes, PASTIS fold assignments,
-Five-Billion-Pixels split labels, optimizer hyperparameters, scheduler, batch
-size, epoch count, checkpoint location, and seed remain unset in the template
+Five-Billion-Pixels split labels, optimizer hyperparameters, scheduler,
+checkpoint location, and seed remain unset in the template
 because they are experiment-specific or require verified local dataset
 metadata. `num_workers: 0`, `pin_memory: false`, `deterministic: true`, and
 `device: auto` are operational starting settings, not dataset-derived values.
@@ -165,6 +180,21 @@ metadata. `num_workers: 0`, `pin_memory: false`, `deterministic: true`, and
 
 Scheduler state is included in checkpoints. If a scheduler is used, its
 configuration must remain identical on resume.
+
+Schedulers retain their configured behavior and are stepped once after each
+completed validation epoch, including the epoch that exhausts Early Stopping
+patience. Early Stopping does not alter scheduler parameters. Cosine `T_max`
+remains explicit and is not inferred from the 100 epoch maximum; a run that
+stops early may stop before reaching the schedule's minimum learning rate.
+`ReduceLROnPlateau` receives the same checkpoint-selection mIoU used by Early
+Stopping.
+
+The checked-in `configs/training.yaml` sets the approved PASTIS baseline
+defaults of batch size 16, maximum 100 epochs, patience 15, and min_delta
+0.001. Use it with each of the five `pastis_run_*.yaml` dataset configs and
+each of the two model configs. Seed, class count, optimizer values, scheduler,
+and checkpoint location remain explicit experiment inputs; no optimizer or
+scheduler hyperparameters are implied by these defaults.
 
 ## Scientific decisions still required
 

@@ -38,7 +38,7 @@ class TinyPixels(Dataset):
         }
 
 
-def make_tiny_trainer(tmp_path, *, epochs=2, seed=17, config=None):
+def make_tiny_trainer(tmp_path, *, epochs=2, seed=17, config=None, early_stopping=None, scheduler=None):
     set_seed(seed)
     train_gen = torch.Generator().manual_seed(seed)
     val_gen = torch.Generator().manual_seed(seed + 1)
@@ -51,7 +51,19 @@ def make_tiny_trainer(tmp_path, *, epochs=2, seed=17, config=None):
         num_classes=2, epochs=epochs, checkpoint_dir=tmp_path,
         config=config or {"test_run": "tiny", "epochs": 2},
         device="cpu", ignore_index=255,
+        early_stopping=early_stopping, scheduler=scheduler,
     )
+
+
+def set_scripted_epochs(trainer, scores):
+    iterator = iter(scores)
+    def scripted_train_epoch():
+        trainer.optimizer.step()
+        return {"loss": 1.0, "valid_pixels": 7, "skipped_batches": 0}
+    trainer.train_epoch = scripted_train_epoch
+    trainer.validate = lambda *, full_metrics=True: {
+        "loss": 1.0, "valid_pixels": 7, "mIoU": next(iterator),
+    }
 
 
 def test_train_step_validation_and_ignored_pixels(tmp_path):
@@ -124,6 +136,98 @@ def test_validation_schedule_keeps_miou_each_epoch_and_full_metrics_at_end(tmp_p
     assert "AUROC" not in history[0]["validation"]
     assert "AUROC" not in history[1]["validation"]
     assert "AUROC" in history[2]["validation"]
+
+
+def test_early_stopping_min_delta_best_checkpoint_and_patience(tmp_path):
+    trainer = make_tiny_trainer(
+        tmp_path, epochs=30,
+        early_stopping={"enabled": True, "patience": 3, "min_delta": 0.001},
+    )
+    set_scripted_epochs(trainer, [0.5, 0.5005, 0.502, 0.5025, 0.503, 0.5031, 0.5032, 0.5033])
+    history = trainer.fit()
+    # A sub-threshold rise is not an Early Stopping improvement, but it still
+    # becomes the best raw-mIoU checkpoint.
+    assert [row["early_stopping"]["epochs_without_improvement"] for row in history] == [0, 1, 0, 1, 0, 1, 2, 3]
+    assert len(history) == 8
+    best = torch.load(tmp_path / "best.pt", weights_only=False)
+    latest = torch.load(tmp_path / "latest.pt", weights_only=False)
+    assert best["best_validation_miou"] == pytest.approx(0.5033)
+    assert best["epoch"] == 7
+    assert latest["early_stopping"]["stopped"] is True
+    assert latest["early_stopping"]["epochs_without_improvement"] == 3
+
+
+def test_early_stopping_resumes_counter_optimizer_scheduler_and_metric(tmp_path):
+    early = {"enabled": True, "patience": 3, "min_delta": 0.001}
+    config = {"test_run": "early-resume", "epochs": 6, "early_stopping": early}
+    first = make_tiny_trainer(
+        tmp_path, epochs=2, config=config, early_stopping=early,
+    )
+    first.scheduler = torch.optim.lr_scheduler.StepLR(first.optimizer, step_size=2, gamma=0.5)
+    set_scripted_epochs(first, [0.4, 0.4])
+    first.fit()
+    saved = torch.load(tmp_path / "latest.pt", weights_only=False)
+    assert saved["early_stopping"]["epochs_without_improvement"] == 1
+    assert saved["scheduler"]["last_epoch"] == 2
+
+    resumed = make_tiny_trainer(
+        tmp_path / "resumed", epochs=6, config=config, early_stopping=early,
+    )
+    resumed.scheduler = torch.optim.lr_scheduler.StepLR(resumed.optimizer, step_size=2, gamma=0.5)
+    resumed.resume(tmp_path / "latest.pt")
+    assert resumed.early_stopping_best_miou == pytest.approx(0.4)
+    assert resumed.epochs_without_improvement == 1
+    assert resumed.scheduler.state_dict() == saved["scheduler"]
+    set_scripted_epochs(resumed, [0.4, 0.4])
+    history = resumed.fit()
+    assert len(history) == 2
+    assert history[-1]["early_stopping"]["stopped"] is True
+
+
+def test_scheduler_advances_once_per_epoch_up_to_100_epoch_max(tmp_path):
+    trainer = make_tiny_trainer(
+        tmp_path, epochs=100,
+        early_stopping={"enabled": True, "patience": 15, "min_delta": 0.001},
+    )
+    trainer.scheduler = torch.optim.lr_scheduler.StepLR(trainer.optimizer, step_size=20, gamma=0.5)
+    set_scripted_epochs(trainer, [0.01 + i * 0.01 for i in range(100)])
+    history = trainer.fit()
+    assert len(history) == 100
+    assert trainer.scheduler.last_epoch == 100
+    assert trainer.optimizer.param_groups[0]["lr"] == pytest.approx(0.01 * 0.5 ** 5)
+
+
+def test_early_stopping_configuration_and_legacy_checkpoint_validation(tmp_path):
+    with pytest.raises(ValueError, match="patience"):
+        make_tiny_trainer(tmp_path / "bad", early_stopping={"enabled": True, "patience": 0, "min_delta": 0.001})
+    old = make_tiny_trainer(tmp_path / "old", epochs=1)
+    old.save_checkpoint(tmp_path / "old.pt", 0)
+    enabled = make_tiny_trainer(
+        tmp_path / "new", epochs=1,
+        early_stopping={"enabled": True, "patience": 2, "min_delta": 0.001},
+    )
+    with pytest.raises(ValueError, match="no Early Stopping state"):
+        enabled.resume(tmp_path / "old.pt")
+
+
+def test_early_stopping_real_synthetic_training_smoke(tmp_path):
+    trainer = make_tiny_trainer(
+        tmp_path, epochs=2,
+        early_stopping={"enabled": True, "patience": 15, "min_delta": 0.001},
+    )
+    history = trainer.fit()
+    assert len(history) == 2
+    assert all(np.isfinite(row["train"]["loss"]) for row in history)
+    assert all(np.isfinite(row["validation"]["mIoU"]) for row in history)
+    assert (tmp_path / "best.pt").is_file()
+    assert (tmp_path / "latest.pt").is_file()
+    restored = make_tiny_trainer(
+        tmp_path / "restored", epochs=2,
+        early_stopping={"enabled": True, "patience": 15, "min_delta": 0.001},
+    )
+    restored.resume(tmp_path / "latest.pt")
+    assert restored.start_epoch == 2
+    assert restored.early_stopping_best_miou == pytest.approx(trainer.early_stopping_best_miou)
 
 
 def test_dataset_model_evaluator_integration_and_test_split_exclusion(tmp_path):

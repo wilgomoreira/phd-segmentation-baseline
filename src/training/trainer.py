@@ -6,6 +6,7 @@ import json
 import os
 import random
 import copy
+import math
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +87,7 @@ class SegmentationTrainer:
         metric_options: dict[str, Any] | None = None,
         full_metrics_every_epochs: int | None = None,
         full_metrics_at_end: bool = True,
+        early_stopping: dict[str, Any] | None = None,
     ) -> None:
         if num_classes < 2 or epochs < 1:
             raise ValueError("num_classes must be >= 2 and epochs must be positive")
@@ -112,6 +114,28 @@ class SegmentationTrainer:
             raise TypeError("full_metrics_at_end must be a boolean")
         self.full_metrics_every_epochs = full_metrics_every_epochs
         self.full_metrics_at_end = bool(full_metrics_at_end)
+        early_stopping = early_stopping or {"enabled": False}
+        if not isinstance(early_stopping, dict):
+            raise TypeError("early_stopping must be a mapping")
+        enabled = early_stopping.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise TypeError("early_stopping.enabled must be a boolean")
+        self.early_stopping_enabled = enabled
+        self.early_stopping_patience: int | None = None
+        self.early_stopping_min_delta: float | None = None
+        if self.early_stopping_enabled:
+            patience = early_stopping.get("patience")
+            min_delta = early_stopping.get("min_delta")
+            if not isinstance(patience, int) or isinstance(patience, bool) or patience < 1:
+                raise ValueError("enabled Early Stopping requires positive integer patience")
+            if (not isinstance(min_delta, (int, float)) or isinstance(min_delta, bool)
+                    or not math.isfinite(float(min_delta)) or min_delta < 0):
+                raise ValueError("enabled Early Stopping requires finite nonnegative min_delta")
+            self.early_stopping_patience = patience
+            self.early_stopping_min_delta = float(min_delta)
+        self.early_stopping_best_miou: float | None = None
+        self.epochs_without_improvement = 0
+        self.early_stopping_stopped = False
         self.best_miou = float("-inf")
         self.start_epoch = 0
         self.log_path = self.checkpoint_dir / "metrics.jsonl"
@@ -196,6 +220,38 @@ class SegmentationTrainer:
         )
         return state
 
+    def _early_stopping_state(self) -> dict[str, Any] | None:
+        if not self.early_stopping_enabled:
+            return None
+        return {
+            "best_miou": self.early_stopping_best_miou,
+            "epochs_without_improvement": self.epochs_without_improvement,
+            "stopped": self.early_stopping_stopped,
+        }
+
+    def _update_early_stopping(self, miou: float) -> bool:
+        """Return true when patience has been exhausted.
+
+        The first finite score establishes the reference. Later scores qualify
+        only when they improve it by at least min_delta.
+        """
+        if not self.early_stopping_enabled:
+            return False
+        if not math.isfinite(miou):
+            raise ValueError("checkpoint-selection mIoU must be finite for Early Stopping")
+        if self.early_stopping_best_miou is None:
+            self.early_stopping_best_miou = miou
+            self.epochs_without_improvement = 0
+        elif miou >= self.early_stopping_best_miou + float(self.early_stopping_min_delta):
+            self.early_stopping_best_miou = miou
+            self.epochs_without_improvement = 0
+        else:
+            self.epochs_without_improvement += 1
+        self.early_stopping_stopped = (
+            self.epochs_without_improvement >= int(self.early_stopping_patience)
+        )
+        return self.early_stopping_stopped
+
     def _restore_rng(self, state: dict[str, Any]) -> None:
         random.setstate(state["python"])
         np.random.set_state(state["numpy"])
@@ -217,6 +273,7 @@ class SegmentationTrainer:
             "epoch": epoch,
             "configuration": self.config,
             "best_validation_miou": self.best_miou,
+            "early_stopping": self._early_stopping_state(),
             "rng_states": self._rng_state(),
         }
         path = Path(path)
@@ -245,10 +302,32 @@ class SegmentationTrainer:
             self.scheduler.load_state_dict(checkpoint["scheduler"])
         self.start_epoch = int(checkpoint["epoch"]) + 1
         self.best_miou = float(checkpoint["best_validation_miou"])
+        saved_early_stopping = checkpoint.get("early_stopping")
+        if self.early_stopping_enabled:
+            if not isinstance(saved_early_stopping, dict):
+                raise ValueError("checkpoint has no Early Stopping state; exact resume is unavailable")
+            best_score = saved_early_stopping.get("best_miou")
+            counter = saved_early_stopping.get("epochs_without_improvement")
+            stopped = saved_early_stopping.get("stopped")
+            if (best_score is not None and not math.isfinite(float(best_score))):
+                raise ValueError("checkpoint Early Stopping metric is invalid")
+            if not isinstance(counter, int) or isinstance(counter, bool) or counter < 0:
+                raise ValueError("checkpoint Early Stopping counter is invalid")
+            if not isinstance(stopped, bool):
+                raise ValueError("checkpoint Early Stopping stopped flag is invalid")
+            if (counter >= int(self.early_stopping_patience)) != stopped:
+                raise ValueError("checkpoint Early Stopping counter and stopped flag disagree")
+            self.early_stopping_best_miou = None if best_score is None else float(best_score)
+            self.epochs_without_improvement = counter
+            self.early_stopping_stopped = stopped
+        elif saved_early_stopping is not None:
+            raise ValueError("checkpoint enables Early Stopping but current configuration does not")
         self._restore_rng(checkpoint["rng_states"])
 
     def fit(self) -> list[dict[str, Any]]:
         history: list[dict[str, Any]] = []
+        if self.early_stopping_stopped:
+            return history
         for epoch in range(self.start_epoch, self.epochs):
             train_metrics = self.train_epoch()
             scheduled = (self.full_metrics_every_epochs is not None and
@@ -256,6 +335,9 @@ class SegmentationTrainer:
             final = epoch + 1 == self.epochs
             validation_metrics = self.validate(full_metrics=scheduled or (final and self.full_metrics_at_end))
             miou = validation_metrics["mIoU"]
+            if miou is None or not math.isfinite(float(miou)):
+                raise ValueError("checkpoint-selection validation mIoU must be finite")
+            stop = self._update_early_stopping(float(miou))
             if self.scheduler is not None:
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                     self.scheduler.step(float(miou))
@@ -266,6 +348,7 @@ class SegmentationTrainer:
                 "learning_rate": self.optimizer.param_groups[0]["lr"],
                 "train": train_metrics,
                 "validation": validation_metrics,
+                "early_stopping": self._early_stopping_state(),
             }
             history.append(record)
             with self.log_path.open("a", encoding="utf-8") as stream:
@@ -274,4 +357,6 @@ class SegmentationTrainer:
                 self.best_miou = float(miou)
                 self.save_checkpoint(self.checkpoint_dir / "best.pt", epoch)
             self.save_checkpoint(self.checkpoint_dir / "latest.pt", epoch)
+            if stop:
+                break
         return history
