@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "channel_order": ["B2", "B3", "B4", "B5", "B6", "B7", "B8", "B8A", "B11", "B12"],
+  "adaptation": "Map pretrained Red (RGB channel 0) to B4 (input channel 2), Green (RGB channel 1) to B3 (input channel 1), and Blue (RGB channel 2) to B2 (input channel 0); zero-initialize the remaining seven input kernels. Preserve all other encoder tensors. Keep encoder trainable. Initialize segmentation decoder and task-specific head randomly.",
+  "sources": {
+    "torchvision_resnet50_imagenet1k_v2": {
+      "model": "torchvision_resnet50_imagenet1k_v2",
+      "checkpoint_path": "/home/wilgomoreira/workspace/partilha_remota/cache/pretrained/phd-segmentation-baselines/resnet50-imagenet1k-v2.pth",
+      "source_url": "https://download.pytorch.org/models/resnet50-11ad3fa6.pth",
+      "source_revision": "torchvision 0.26.0 ResNet50_Weights.IMAGENET1K_V2 (weight enum URL resnet50-11ad3fa6.pth)",
+      "sha256": "11ad3fa62ca79e40addfd354a8ec4b7c75143b3038b8d2a807fbc68deab379ca",
+      "license": "Torchvision source project is BSD-3-Clause. The official weights API page does not state a separate license for the binary weight artifact; retain this source attribution and verify institutional terms before redistribution.",
+      "license_url": "https://github.com/pytorch/vision/blob/main/LICENSE",
+      "model_card_url": "https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.resnet50.html",
+      "adaptation": "ResNet conv1 Red kernel maps to B4, Green to B3, and Blue to B2; seven remaining input kernels zero. BatchNorm and layer1-layer4 loaded exactly. Classifier omitted. DeepLab decoder and segmentation head remain random."
+    },
+    "nvidia_mit_b1_imagenet1k": {
+      "model": "nvidia_mit_b1_imagenet1k",
+      "checkpoint_path": "/home/wilgomoreira/workspace/partilha_remota/cache/pretrained/phd-segmentation-baselines/mit-b1-imagenet1k.bin",
+      "source_url": "https://huggingface.co/nvidia/mit-b1/resolve/13ddceec4e8bdf401e7cd7acf5aebc526222518c/pytorch_model.bin",
+      "source_revision": "13ddceec4e8bdf401e7cd7acf5aebc526222518c",
+      "sha256": "980b86b60db37b1b1528086f6c53d253d879e9e09ebe07397b40fd275738a3bf",
+      "license": "NVIDIA SegFormer source license (non-commercial research/evaluation only; see license terms). The Hugging Face model card reports license 'other'.",
+      "license_url": "https://github.com/NVlabs/SegFormer/blob/master/LICENSE",
+      "model_card_url": "https://huggingface.co/nvidia/mit-b1/tree/13ddceec4e8bdf401e7cd7acf5aebc526222518c",
+      "adaptation": "Load MiT-B1 encoder tensors only. Concatenate official query/key/value projections into this implementation's combined key-value layer in key-then-value order. Map first-stage Red to B4, Green to B3, and Blue to B2; zero the other seven input kernels. Keep encoder trainable; discard ImageNet classifier; segmentation decoder remains random."
+    }
+  }
+}

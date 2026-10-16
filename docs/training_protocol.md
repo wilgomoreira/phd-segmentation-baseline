@@ -146,8 +146,8 @@ are settled.
 | `optimizer.name` | Currently `AdamW`. |
 | `optimizer.learning_rate` | Required positive initial learning rate. |
 | `optimizer.weight_decay` | Required nonnegative AdamW weight decay. |
-| `scheduler.name` | `null`/`none`, `cosine`, `step`, or `plateau`. |
-| `scheduler.parameters` | Constructor arguments: cosine requires `T_max`; step requires `step_size` and `gamma`; plateau accepts `ReduceLROnPlateau` options except mode (fixed to maximize mIoU). |
+| `scheduler.name` | `null`/`none`, `cosine`, `step`, `plateau`, or `polynomial`. |
+| `scheduler.parameters` | Constructor arguments: cosine requires `T_max`; step requires `step_size` and `gamma`; plateau accepts `ReduceLROnPlateau` options except mode (fixed to maximize mIoU); polynomial requires positive `total_iters` and `power`. |
 | `metrics.ece_bins` | Equal-width ECE bin count; protocol default is 15. |
 | `metrics.adaptive_ece_bins` | Adaptive ECE bin count; protocol default is 15. |
 | `metrics.storage` | Exact rank storage, `memory` or `disk`; memory is convenient for small validation sets, disk reduces resident record storage for large sets. |
@@ -176,6 +176,10 @@ metadata. `num_workers: 0`, `pin_memory: false`, `deterministic: true`, and
 - `step`: `StepLR`; requires `step_size` and `gamma`; stepped once after
   validation.
 - `plateau`: `ReduceLROnPlateau(mode="max")`; receives validation mIoU.
+- `polynomial`: `PolynomialLR`; requires positive `total_iters` and `power`, and
+  is stepped once after each completed epoch like the other non-plateau
+  schedulers. For the PASTIS factorial pilot see
+  [pastis_factorial_pilot.md](pastis_factorial_pilot.md).
 - `null`/`none`: no learning-rate scheduler.
 
 Scheduler state is included in checkpoints. If a scheduler is used, its

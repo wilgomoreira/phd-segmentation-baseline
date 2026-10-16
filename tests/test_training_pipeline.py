@@ -9,7 +9,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from src.models import build_model
-from src.training.config import build_dataset, build_loaders, make_model
+from src.training.config import build_dataset, build_loaders, make_model, make_scheduler
 from src.training.trainer import SegmentationTrainer, set_seed
 from src.training.runner import create_experiment_directory
 
@@ -195,6 +195,80 @@ def test_scheduler_advances_once_per_epoch_up_to_100_epoch_max(tmp_path):
     assert len(history) == 100
     assert trainer.scheduler.last_epoch == 100
     assert trainer.optimizer.param_groups[0]["lr"] == pytest.approx(0.01 * 0.5 ** 5)
+
+
+def test_polynomial_scheduler_resume_matches_uninterrupted_100_epoch_sequence():
+    def create():
+        parameter = nn.Parameter(torch.tensor(1.0))
+        optimizer = torch.optim.AdamW([parameter], lr=1e-4, weight_decay=1e-4)
+        scheduler = make_scheduler(optimizer, {
+            "scheduler": {"name": "polynomial", "parameters": {"total_iters": 100, "power": 0.9}},
+        })
+        return optimizer, scheduler
+
+    full_optimizer, full_scheduler = create()
+    full_rates = []
+    for _ in range(100):
+        full_optimizer.step()
+        full_scheduler.step()
+        full_rates.append(full_optimizer.param_groups[0]["lr"])
+
+    staged_optimizer, staged_scheduler = create()
+    for _ in range(37):
+        staged_optimizer.step()
+        staged_scheduler.step()
+    optimizer_state = staged_optimizer.state_dict()
+    scheduler_state = staged_scheduler.state_dict()
+    resumed_optimizer, resumed_scheduler = create()
+    resumed_optimizer.load_state_dict(optimizer_state)
+    resumed_scheduler.load_state_dict(scheduler_state)
+    resumed_rates = []
+    for _ in range(63):
+        resumed_optimizer.step()
+        resumed_scheduler.step()
+        resumed_rates.append(resumed_optimizer.param_groups[0]["lr"])
+    assert resumed_rates == pytest.approx(full_rates[37:], rel=0, abs=1e-18)
+    assert full_rates[0] == pytest.approx(1e-4 * (0.99 ** 0.9))
+    assert full_rates[-1] == 0.0
+
+
+def test_polynomial_scheduler_checkpoint_resume_matches_trainer_epoch_sequence(tmp_path):
+    config = {"test_run": "polynomial-resume", "epochs": 6,
+             "scheduler": {"name": "polynomial", "parameters": {"total_iters": 100, "power": 0.9}}}
+    full = make_tiny_trainer(tmp_path / "full", epochs=6, config=config)
+    full.scheduler = make_scheduler(full.optimizer, config)
+    set_scripted_epochs(full, [0.1 + i * 0.01 for i in range(6)])
+    full_history = full.fit()
+
+    staged = make_tiny_trainer(tmp_path / "staged", epochs=3, config=config)
+    staged.scheduler = make_scheduler(staged.optimizer, config)
+    set_scripted_epochs(staged, [0.1, 0.11, 0.12])
+    staged_history = staged.fit()
+    saved = torch.load(tmp_path / "staged" / "latest.pt", map_location="cpu", weights_only=False)
+    assert saved["scheduler"]["last_epoch"] == 3
+
+    resumed = make_tiny_trainer(tmp_path / "resumed", epochs=6, config=config)
+    resumed.scheduler = make_scheduler(resumed.optimizer, config)
+    resumed.resume(tmp_path / "staged" / "latest.pt")
+    set_scripted_epochs(resumed, [0.13, 0.14, 0.15])
+    resumed_history = resumed.fit()
+    rates = [row["learning_rate"] for row in full_history]
+    combined_rates = [row["learning_rate"] for row in staged_history] + [
+        row["learning_rate"] for row in resumed_history
+    ]
+    assert combined_rates == pytest.approx(rates, rel=0, abs=1e-18)
+
+
+def test_polynomial_scheduler_configuration_validation():
+    parameter = nn.Parameter(torch.tensor(1.0))
+    optimizer = torch.optim.AdamW([parameter], lr=1e-4)
+    assert isinstance(make_scheduler(optimizer, {
+        "scheduler": {"name": "polynomial", "parameters": {"total_iters": 100, "power": 0.9}},
+    }), torch.optim.lr_scheduler.PolynomialLR)
+    with pytest.raises(ValueError, match="positive total_iters"):
+        make_scheduler(optimizer, {
+            "scheduler": {"name": "polynomial", "parameters": {"total_iters": 0, "power": 0.9}},
+        })
 
 
 def test_early_stopping_configuration_and_legacy_checkpoint_validation(tmp_path):

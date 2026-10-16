@@ -18,7 +18,7 @@ optimizer:
   learning_rate: null
   weight_decay: null
 scheduler:
-  name: null  # null/none, cosine, step, or plateau.
+  name: null  # null/none, cosine, step, plateau, or polynomial.
   parameters: {}  # See docs/training_protocol.md for per-scheduler arguments.
 metrics:
   ece_bins: 15

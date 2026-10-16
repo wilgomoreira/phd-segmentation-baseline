@@ -230,4 +230,13 @@ def make_scheduler(optimizer: torch.optim.Optimizer, config: dict[str, Any]):
         return torch.optim.lr_scheduler.StepLR(optimizer, **args)
     if name == "plateau":
         return torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", **args)
+    if name == "polynomial":
+        total_iters, power = args.get("total_iters"), args.get("power")
+        if (not isinstance(total_iters, int) or isinstance(total_iters, bool) or total_iters < 1
+                or not isinstance(power, (int, float)) or isinstance(power, bool)
+                or not math.isfinite(float(power)) or power <= 0):
+            raise ValueError("polynomial scheduler requires positive total_iters and finite positive power")
+        return torch.optim.lr_scheduler.PolynomialLR(
+            optimizer, total_iters=total_iters, power=float(power),
+        )
     raise ValueError(f"unsupported scheduler {name!r}")

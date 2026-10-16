@@ -1,0 +1,85 @@
+# Run-01 controlled factorial pilot. This catalog is separate from the
+# approved ten-run scratch launcher and has a separate NFS output root.
+schema: 1
+name: pastis_run01_pretrained_polynomial_factorial
+project_root: /home/wilgomoreira/workspace/partilha_remota/projects/phd-segmentation-baselines
+dataset_config: configs/datasets/pastis_run_01.yaml
+model_configs:
+  deeplabv3plus_resnet50: configs/models/deeplabv3plus.yaml
+  segformer_b1: configs/models/segformer_b1.yaml
+pretrained_manifest: configs/pretrained/pastis_imagenet_encoders.json
+output_root: /home/wilgomoreira/workspace/partilha_remota/experiments/phd-segmentation-baselines/pastis_factorial_pilot
+seed: 2401
+deterministic: true
+device: auto
+num_classes: 19
+epochs: 100
+data:
+  batch_size: 16
+  num_workers: 0
+  pin_memory: false
+loss:
+  name: CrossEntropyLoss
+  ignore_index: 19
+optimizer:
+  name: AdamW
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+early_stopping:
+  enabled: true
+  patience: 15
+  min_delta: 0.001
+schedulers:
+  no_scheduler:
+    name: none
+    parameters: {}
+  polynomial:
+    name: polynomial
+    parameters:
+      total_iters: 100
+      power: 0.9
+initializations:
+  scratch:
+    kind: scratch
+  deeplab_pretrained:
+    kind: imagenet_encoder
+    source: torchvision_resnet50_imagenet1k_v2
+  segformer_pretrained:
+    kind: imagenet_encoder
+    source: nvidia_mit_b1_imagenet1k
+variants:
+  deeplabv3plus_resnet50:
+    scratch_no_scheduler:
+      initialization: scratch
+      scheduler: no_scheduler
+      action: reuse_completed_baseline
+      reference: /home/wilgomoreira/workspace/partilha_remota/experiments/phd-segmentation-baselines/pastis_full_runs/deeplabv3plus_resnet50/run_01/run_20261016T095312.069165Z_4ab2f1b2
+    scratch_polynomial:
+      initialization: scratch
+      scheduler: polynomial
+      action: run
+    pretrained_no_scheduler:
+      initialization: deeplab_pretrained
+      scheduler: no_scheduler
+      action: run
+    pretrained_polynomial:
+      initialization: deeplab_pretrained
+      scheduler: polynomial
+      action: run
+  segformer_b1:
+    scratch_no_scheduler:
+      initialization: scratch
+      scheduler: no_scheduler
+      action: run
+    scratch_polynomial:
+      initialization: scratch
+      scheduler: polynomial
+      action: run
+    pretrained_no_scheduler:
+      initialization: segformer_pretrained
+      scheduler: no_scheduler
+      action: run
+    pretrained_polynomial:
+      initialization: segformer_pretrained
+      scheduler: polynomial
+      action: run

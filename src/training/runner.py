@@ -15,6 +15,7 @@ from typing import Any
 
 from .config import build_loaders, load_yaml, make_model, make_optimizer, make_scheduler
 from .trainer import SegmentationTrainer, resolve_device, set_seed
+from src.models.pretrained import initialize_pretrained_encoder
 
 
 def _canonical_hash(value: Any) -> str:
@@ -69,7 +70,7 @@ def run(config_path: str | Path) -> list[dict[str, Any]]:
     if seed is None or num_classes is None or epochs is None:
         raise ValueError("seed, num_classes, and epochs must be explicitly configured")
     set_seed(int(seed), deterministic=bool(config.get("deterministic", True)))
-    project_root = config_path.resolve().parent.parent
+    project_root = Path(config.get("project_root", config_path.resolve().parent.parent)).resolve()
     dataset_path = Path(config["dataset_config"])
     model_path = Path(config["model_config"])
     if not dataset_path.is_absolute():
@@ -88,6 +89,12 @@ def run(config_path: str | Path) -> list[dict[str, Any]]:
         config_dir=dataset_path.parent,
     )
     model = make_model(model_config, dataset_config, int(num_classes))
+    initialization = config.get("initialization") or {"kind": "scratch"}
+    if initialization.get("kind") == "imagenet_encoder":
+        verification = initialize_pretrained_encoder(model, initialization)
+        config["initialization"] = {**initialization, "verification": verification}
+    elif initialization.get("kind") != "scratch":
+        raise ValueError(f"unsupported initialization kind {initialization.get('kind')!r}")
     optimizer = make_optimizer(model, config)
     scheduler = make_scheduler(optimizer, config)
     loss_cfg = config.get("loss") or {}
