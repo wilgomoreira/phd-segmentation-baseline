@@ -189,6 +189,48 @@ stops early may stop before reaching the schedule's minimum learning rate.
 `ReduceLROnPlateau` receives the same checkpoint-selection mIoU used by Early
 Stopping.
 
+## Sequential PASTIS full-run launcher
+
+`scripts/run_pastis_baselines.py` runs DeepLabV3+ ResNet-50 runs 01–05,
+followed by SegFormer-B1 runs 01–05. All ten runs use the approved seed 2401.
+Use `--dry-run` to review the ten-run plan without creating output directories
+or invoking training.
+
+Each model/fold combination has a separate root under
+`experiments/phd-segmentation-baselines/pastis_full_runs/<model>/run_XX/`.
+That root records `training_config.yaml`, `launcher_state.json`, and
+`launcher.log`; the trainer's timestamped child directory contains
+`metrics.jsonl`, `best.pt`, `latest.pt`, and resolved run metadata.
+
+On restart, the launcher resumes only from one verified `latest.pt` whose
+configuration, best checkpoint, metrics epochs, and Early Stopping state agree.
+It skips a run only after verifying that its latest checkpoint reached epoch
+100 or records a patience stop. An output root without matching launcher
+ownership records, a run without a usable latest checkpoint, or inconsistent
+checkpoint/log state stops the sequence and preserves the files for inspection.
+The launcher never silently creates a replacement run over such output.
+
+Prepare an idle tmux shell with:
+
+```sh
+tmux new-session -d -s pastis-full-runs 'bash --noprofile --norc -i'
+```
+
+After selecting the experiment seed, start the sequence inside that shell with:
+
+```sh
+tmux send-keys -t pastis-full-runs 'cd /home/wilgomoreira/workspace/partilha_remota/projects/phd-segmentation-baselines && /home/wilgomoreira/.venvs/phd-segmentation-baselines-py311/bin/python scripts/run_pastis_baselines.py --seed 2401' C-m
+```
+
+To execute only DeepLabV3+ ResNet-50 run 01, use the explicit paired selection:
+
+```sh
+tmux send-keys -t pastis-full-runs 'cd /home/wilgomoreira/workspace/partilha_remota/projects/phd-segmentation-baselines && /home/wilgomoreira/.venvs/phd-segmentation-baselines-py311/bin/python scripts/run_pastis_baselines.py --seed 2401 --model deeplabv3plus_resnet50 --run 1' C-m
+```
+
+Monitor the shell with `tmux attach -t pastis-full-runs`; per-run logs and
+checkpoints remain on NFS if the client disconnects.
+
 The checked-in `configs/training.yaml` sets the approved PASTIS baseline
 defaults of batch size 16, maximum 100 epochs, patience 15, and min_delta
 0.001. Use it with each of the five `pastis_run_*.yaml` dataset configs and
