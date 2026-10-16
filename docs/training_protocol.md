@@ -10,9 +10,39 @@ test-loader argument or test evaluation in the training pipeline. Validation
 mIoU selects `best.pt`; the test partition must remain untouched until model
 selection and configuration are complete.
 
-For PASTIS, configure disjoint `train_folds` and `validation_folds` explicitly.
-The official Fold labels are not implicitly treated as train/validation/test.
-Any held-out fold must be omitted from both lists. For Five-Billion-Pixels,
+For PASTIS, use the five checked-in run configurations
+`configs/datasets/pastis_run_01.yaml` through `pastis_run_05.yaml`. Each run
+assigns three official folds to training, one to validation, and one to test;
+the five test roles rotate so each official fold is tested once. The validation
+fold is divided by complete `TILE` groups into checkpoint-selection and
+calibration subsets. The tile assignment is explicit per run and the partition
+planner rejects duplicate IDs, fold overlap, missing tiles, or incomplete
+coverage. The training runner loads only training and checkpoint-selection
+samples. Calibration data have a separate post-fit dataset factory; there is
+no test-dataset factory in the training/calibration pipeline.
+
+The PASTIS configs fix Sentinel-2 input to all 10 bands, select the observation
+nearest 2019-05-15, use 19 output classes (IDs 0–18), and exclude void ID 19.
+`scripts/prepare_pastis_protocol.py` validates the four sample-ID partitions
+and computes each run's normalization file. Statistics use the selected date
+from training-fold S2 arrays only, with each pixel weighted equally, population
+standard deviation (`ddof=0`), and no annotation reads. The saved statistics
+include fold/date provenance and a hash of the training IDs. The same file is
+then applied unchanged to training and all held-out subsets. Do not recompute it
+from validation, calibration, or test data. The output file is protected from
+replacement unless `--overwrite` is explicitly supplied.
+
+The validation split is spatially aware at the Sentinel tile level: a tile is
+assigned wholly to checkpoint selection or calibration. This reduces direct
+spatial reuse between model selection and temperature fitting, while keeping
+the split deterministic. It can produce different subset sizes and does not
+remove spatial correlation between validation tiles and training/test patches.
+Official PASTIS folds separate patch IDs but are interspersed geographically;
+they measure patch-level performance and do not guarantee geographic
+independence. Add a geographically blocked evaluation before making claims
+about transfer to unseen regions.
+
+For Five-Billion-Pixels,
 configure different manifest labels under `splits.train` and
 `splits.validation`; labels `test` and `testing` are rejected for either role.
 The manifest may contain test records, but the loaders filter them out before
@@ -139,11 +169,11 @@ configuration must remain identical on resume.
 ## Scientific decisions still required
 
 1. Confirm class count and class-ID mapping independently for each dataset.
-2. Choose PASTIS train/validation folds and reserve all held-out test data;
-   choose the already documented single-date policy before evaluation.
+2. Use the fixed five-run PASTIS role assignments and date policy; keep each
+   test fold unopened until model selection and calibration are complete.
 3. Verify Five-Billion-Pixels official split semantics and choose suitable
    train/validation manifest labels without using its test split for selection.
-4. Set train-only normalization, valid/ignore label semantics, batch size,
+4. Use the saved train-only normalization for each run; set valid/ignore label semantics, batch size,
    optimizer values, scheduler, epoch budget, and checkpoint/log locations.
 5. Select an explicit seed and decide whether deterministic-op enforcement is
    required for the intended hardware/software stack.

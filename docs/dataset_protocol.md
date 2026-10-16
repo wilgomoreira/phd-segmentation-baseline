@@ -1,8 +1,8 @@
 # Dataset protocol and integration status
 
 This document separates facts verified from authoritative dataset sources from
-project choices and fields that must be checked against the locally obtained
-release. No dataset has been downloaded or inspected. The loaders do not infer
+project choices and fields checked against the locally obtained PASTIS
+release. The loaders do not infer
 unverified metadata, label encodings, band order, normalization values, or
 official train/validation/test splits.
 
@@ -71,9 +71,19 @@ RGB-only reduction occurs. Optional tiling happens after date selection.
 The official code supports selecting an index or nearest calendar date and
 documents a reference date for its day-offset interface. This loader uses
 calendar dates directly and does not need a reference-date transformation.
-Official per-fold normalization-stat files are mentioned by the reference
-loader, but this project does not consume them automatically; their exact
-training-only suitability must be verified before use.
+The leakage-controlled run configs fit mean/std from the selected single-date
+S2 planes in the three training folds only; calibration and test samples are
+excluded. The five run-specific files are written under
+`configs/normalization/` by the protocol preparation script. Statistics use
+pixel-weighted population standard deviation (`ddof=0`) and include date/fold
+provenance plus a hash of the training IDs.
+
+The locally inspected metadata has 2,433 unique patch IDs and five official
+folds. The folds occur across the same four Sentinel tiles; cross-fold patch
+footprints do not overlap, but are not geographically blocked. The nearest
+cross-fold footprint gap measured in projected metadata is about 1.28 km.
+Treat official-fold results as patch-level performance, not geographically
+independent generalization.
 
 ## Five-Billion-Pixels: verified facts and loader behavior
 
@@ -125,10 +135,11 @@ near-boundary spatial leakage; exact geographic non-overlap still requires
 checking source footprints/geometries because center points alone cannot prove
 that arbitrary scenes do not overlap.
 
-## Local config fields still intentionally unset
+## Generic template fields still intentionally unset
 
-`configs/datasets/pastis.yaml` leaves root, date strategy/value, normalization,
-ignore-index, and tile dimensions unresolved. `configs/datasets/five_billion_pixels.yaml`
+`configs/datasets/pastis.yaml` remains an unset generic template. The approved
+five-run protocol is recorded in `configs/datasets/pastis_run_01.yaml` through
+`pastis_run_05.yaml`. `configs/datasets/five_billion_pixels.yaml`
 leaves manifest/root, band order, axis layout, normalization, ignore-index,
 coordinate CRS/keys, block size, split fractions/seed/guard, and tiling
 unresolved. These values require the exact local release and experiment plan.

@@ -1,0 +1,25 @@
+# Leakage-controlled PASTIS protocol, run 05; see docs/training_protocol.md.
+dataset: pastis
+root: /home/wilgomoreira/workspace/partilha_remota/datasets/PASTIS
+channels: 10
+sentinel: S2
+image_layout: TCHW
+num_classes: 19
+ignore_index: 19
+train_folds: [2, 3, 4]
+validation_folds: [1]
+test_folds: [5]
+validation_fold: 1
+test_fold: 5
+checkpoint_selection_tiles: [t30uxv, t31tfm]
+calibration_tiles: [t31tfj, t32ulu]
+models: [deeplabv3plus, segformer_b1]
+single_date:
+  strategy: nearest_date
+  value: '2019-05-15'
+normalization:
+  scale: null
+  statistics_file: ../normalization/pastis_run_05.json
+tiling:
+  size: null
+  stride: null

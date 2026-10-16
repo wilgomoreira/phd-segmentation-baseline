@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 import math
+import json
 
 import yaml
 import torch
@@ -18,6 +19,7 @@ from src.datasets import (
     collate_segmentation_batch,
 )
 from src.models import build_model
+from .pastis_protocol import plan_pastis_partitions
 
 
 def load_yaml(path: str | Path) -> dict[str, Any]:
@@ -28,17 +30,43 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
     return value
 
 
-def _normalization(config: dict[str, Any] | None) -> Normalization:
+def _normalization(
+    config: dict[str, Any] | None,
+    *,
+    config_dir: str | Path | None = None,
+    training_folds: list[int] | None = None,
+    date_selection: dict[str, Any] | None = None,
+) -> Normalization:
     config = config or {}
+    if config.get("statistics_file"):
+        if config.get("mean") is not None or config.get("std") is not None:
+            raise ValueError("normalization statistics_file cannot be combined with inline mean/std")
+        if config.get("scale") is not None:
+            raise ValueError("training statistics are fitted in raw S2 units; scale must be null")
+        stats_path = Path(config["statistics_file"])
+        if not stats_path.is_absolute() and config_dir is not None:
+            stats_path = Path(config_dir) / stats_path
+        statistics = load_yaml(stats_path)
+        if statistics.get("channels") != 10 or len(statistics.get("mean", [])) != 10 or len(statistics.get("std", [])) != 10:
+            raise ValueError("PASTIS normalization statistics must contain ten mean/std values")
+        if training_folds is not None and statistics.get("training_folds") != sorted(training_folds):
+            raise ValueError("normalization statistics were not fitted on this run's training folds")
+        if date_selection is not None and statistics.get("date_selection") != date_selection:
+            raise ValueError("normalization statistics use a different single-date selection")
+        return Normalization(scale=config.get("scale"), mean=tuple(statistics["mean"]), std=tuple(statistics["std"]))
     return Normalization(scale=config.get("scale"), mean=config.get("mean"), std=config.get("std"))
 
 
-def build_dataset(config: dict[str, Any], role: str):
+def build_dataset(config: dict[str, Any], role: str, *, config_dir: str | Path | None = None):
     """Build one train or validation dataset; this factory has no test role."""
     if role not in ("train", "validation"):
         raise ValueError("only train and validation datasets can be built by this pipeline")
     name = config.get("dataset")
-    norm = _normalization(config.get("normalization"))
+    norm = _normalization(
+        config.get("normalization"), config_dir=config_dir,
+        training_folds=config.get("train_folds") if name == "pastis" else None,
+        date_selection=config.get("single_date") if name == "pastis" else None,
+    )
     tile = config.get("tiling") or {}
     tile_size, tile_stride = tile.get("size"), tile.get("stride")
     ignore_index = config.get("ignore_index")
@@ -46,12 +74,23 @@ def build_dataset(config: dict[str, Any], role: str):
         folds = config.get(f"{role}_folds")
         if not isinstance(folds, list) or not folds:
             raise ValueError(f"PASTIS requires explicit nonempty {role}_folds")
+        selection_tiles = config.get("checkpoint_selection_tiles") if role == "validation" else None
+        if role == "validation" and selection_tiles:
+            metadata = json.loads((Path(config["root"]) / "metadata.geojson").read_text(encoding="utf-8"))
+            patch_ids = [
+                int(feature["properties"]["ID_PATCH"])
+                for feature in metadata["features"]
+                if int(feature["properties"]["Fold"]) in set(folds)
+                and feature["properties"].get("TILE") in set(selection_tiles)
+            ]
+        else:
+            patch_ids = None
         date_cfg = config.get("single_date") or {}
         strategy, value = date_cfg.get("strategy"), date_cfg.get("value")
         if strategy is None or value is None:
             raise ValueError("PASTIS date selection must be explicitly configured")
         return PastisSingleDateDataset(
-            config["root"], date_selection=DateSelection(strategy, value), folds=folds,
+            config["root"], date_selection=DateSelection(strategy, value), folds=folds, patch_ids=patch_ids,
             normalization=norm, ignore_index=ignore_index,
             tile_size=tile_size, tile_stride=tile_stride,
         )
@@ -70,9 +109,36 @@ def build_dataset(config: dict[str, Any], role: str):
     raise ValueError(f"unsupported dataset configuration {name!r}")
 
 
+def build_calibration_dataset(dataset_config: dict[str, Any], *, config_dir: str | Path | None = None):
+    """Build only the reserved validation calibration subset for post-fit use.
+
+    The training runner never calls this function. There is deliberately no
+    test-dataset factory in the training or calibration pipeline.
+    """
+    if dataset_config.get("dataset") != "pastis" or "test_fold" not in dataset_config:
+        raise ValueError("calibration datasets require an explicit PASTIS five-fold protocol")
+    partitions = plan_pastis_partitions(
+        Path(dataset_config["root"]) / "metadata.geojson", dataset_config,
+    )
+    return PastisSingleDateDataset(
+        dataset_config["root"],
+        date_selection=DateSelection(
+            dataset_config["single_date"]["strategy"], dataset_config["single_date"]["value"],
+        ),
+        folds=[dataset_config["validation_fold"]],
+        patch_ids=partitions["calibration"],
+        normalization=_normalization(
+            dataset_config.get("normalization"), config_dir=config_dir,
+            training_folds=dataset_config.get("train_folds"),
+            date_selection=dataset_config.get("single_date"),
+        ),
+        ignore_index=dataset_config.get("ignore_index"),
+    )
+
+
 def build_loaders(
     dataset_config: dict[str, Any], *, batch_size: int, num_workers: int,
-    seed: int, pin_memory: bool,
+    seed: int, pin_memory: bool, config_dir: str | Path | None = None,
 ) -> tuple[DataLoader, DataLoader]:
     if batch_size <= 0 or num_workers < 0:
         raise ValueError("batch_size must be positive and num_workers nonnegative")
@@ -83,14 +149,16 @@ def build_loaders(
             raise ValueError("PASTIS train_folds and validation_folds must both be explicitly configured")
         if set(train_folds) & set(validation_folds):
             raise ValueError("PASTIS train and validation folds must be disjoint")
+        if "test_fold" in dataset_config:
+            plan_pastis_partitions(Path(dataset_config["root"]) / "metadata.geojson", dataset_config)
     elif dataset_config.get("dataset") == "five_billion_pixels":
         splits = dataset_config.get("splits") or {}
         if not splits.get("train") or not splits.get("validation"):
             raise ValueError("Five-Billion-Pixels train and validation split names are required")
         if splits["train"] == splits["validation"]:
             raise ValueError("Five-Billion-Pixels train and validation splits must differ")
-    train_set = build_dataset(dataset_config, "train")
-    validation_set = build_dataset(dataset_config, "validation")
+    train_set = build_dataset(dataset_config, "train", config_dir=config_dir)
+    validation_set = build_dataset(dataset_config, "validation", config_dir=config_dir)
     generator = torch.Generator().manual_seed(seed)
     train_loader = DataLoader(
         train_set, batch_size=batch_size, shuffle=True, num_workers=num_workers,

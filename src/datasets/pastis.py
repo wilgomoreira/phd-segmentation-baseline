@@ -61,6 +61,7 @@ class PastisSingleDateDataset(ArrayManifestDataset):
         *,
         date_selection: DateSelection,
         folds: tuple[int, ...] | list[int] | None = None,
+        patch_ids: tuple[int, ...] | list[int] | None = None,
         normalization: Normalization | None = None,
         ignore_index: int | None = None,
         tile_size: int | tuple[int, int] | None = None,
@@ -84,6 +85,7 @@ class PastisSingleDateDataset(ArrayManifestDataset):
         if not isinstance(geojson.get("features"), list):
             raise ValueError("PASTIS metadata.geojson must contain a FeatureCollection")
         fold_set = set(folds) if folds is not None else None
+        patch_set = set(patch_ids) if patch_ids is not None else None
         rows = []
         for feature in geojson["features"]:
             properties = feature.get("properties", {})
@@ -92,6 +94,8 @@ class PastisSingleDateDataset(ArrayManifestDataset):
             patch_id = int(properties["ID_PATCH"])
             fold = int(properties["Fold"])
             if fold_set is not None and fold not in fold_set:
+                continue
+            if patch_set is not None and patch_id not in patch_set:
                 continue
             dates = _metadata_dates(properties["dates-S2"])
             rows.append({
@@ -131,18 +135,13 @@ class PastisSingleDateDataset(ArrayManifestDataset):
         )
 
     def _select_index(self, dates: list[date]) -> int:
-        if self.date_selection.strategy == "index":
-            index = int(self.date_selection.value)
-            if not 0 <= index < len(dates):
-                raise IndexError(f"date index {index} is out of range for a {len(dates)}-date sample")
-            return index
-        requested = _parse_date(self.date_selection.value)
-        return min(range(len(dates)), key=lambda i: (abs((dates[i] - requested).days), dates[i]))
+        return select_observation_index(dates, self.date_selection)
 
     def _load_image(self, record: dict) -> np.ndarray:
         array = load_array(resolve_relative(self.base_dir, record["image"]), mmap=True)
         index, _ = self.selected_indices[record["patch_id"]]
         return channel_first(array[index], "CHW")
+
 
     def _load_mask(self, record: dict) -> tuple[np.ndarray, np.ndarray]:
         """Read the semantic plane from PASTIS's three-plane target array.
@@ -178,3 +177,14 @@ class PastisSingleDateDataset(ArrayManifestDataset):
                 raise ValueError("explicit valid mask must match semantic mask dimensions")
             valid &= explicit.astype(bool)
         return mask, valid
+
+
+def select_observation_index(dates: list[date], selection: DateSelection) -> int:
+    """Resolve the project's documented deterministic single-date policy."""
+    if selection.strategy == "index":
+        index = int(selection.value)
+        if not 0 <= index < len(dates):
+            raise IndexError(f"date index {index} is out of range for a {len(dates)}-date sample")
+        return index
+    requested = _parse_date(selection.value)
+    return min(range(len(dates)), key=lambda i: (abs((dates[i] - requested).days), dates[i]))

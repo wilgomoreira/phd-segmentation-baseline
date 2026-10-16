@@ -85,6 +85,7 @@ def run(config_path: str | Path) -> list[dict[str, Any]]:
         num_workers=int(train_cfg.get("num_workers", 0)),
         seed=int(seed),
         pin_memory=bool(train_cfg.get("pin_memory", False)),
+        config_dir=dataset_path.parent,
     )
     model = make_model(model_config, dataset_config, int(num_classes))
     optimizer = make_optimizer(model, config)
