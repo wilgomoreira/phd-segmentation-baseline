@@ -10,7 +10,13 @@ import yaml
 import torch
 from torch.utils.data import DataLoader
 
-from src.datasets import DateSelection, FiveBillionPixelsDataset, Normalization, PastisSingleDateDataset
+from src.datasets import (
+    DateSelection,
+    FiveBillionPixelsDataset,
+    Normalization,
+    PastisSingleDateDataset,
+    collate_segmentation_batch,
+)
 from src.models import build_model
 
 
@@ -90,12 +96,14 @@ def build_loaders(
         train_set, batch_size=batch_size, shuffle=True, num_workers=num_workers,
         pin_memory=pin_memory, generator=generator,
         worker_init_fn=seed_worker, persistent_workers=False,
+        collate_fn=collate_segmentation_batch,
     )
     validation_generator = torch.Generator().manual_seed(seed + 1)
     validation_loader = DataLoader(
         validation_set, batch_size=batch_size, shuffle=False, num_workers=num_workers,
         pin_memory=pin_memory, worker_init_fn=seed_worker, persistent_workers=False,
         generator=validation_generator,
+        collate_fn=collate_segmentation_batch,
     )
     return train_loader, validation_loader
 
