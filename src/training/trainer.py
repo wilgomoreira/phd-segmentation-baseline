@@ -161,7 +161,7 @@ class SegmentationTrainer:
         return {"loss": loss_sum / valid_count, "valid_pixels": valid_count, "skipped_batches": skipped}
 
     @torch.no_grad()
-    def validate(self, *, full_metrics: bool = True) -> dict[str, float | int | None]:
+    def validate(self, *, full_metrics: bool = True) -> dict[str, Any]:
         self.model.eval()
         loss_sum, valid_count = 0.0, 0
         accumulator = SegmentationMetricAccumulator(

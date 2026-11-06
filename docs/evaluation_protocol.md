@@ -1,19 +1,20 @@
-# Evaluation protocol
+# PASTIS evaluation protocol
 
-The initial metric protocol below is approved. The implementation pools every
-valid pixel passed through `SegmentationMetricAccumulator.update()` and computes
-metrics once across the accumulated dataset. Batches can have different sizes
-and can arrive in any order. No averaging of per-batch or per-image metrics is
-performed.
+The implementation pools every valid pixel passed through
+`SegmentationMetricAccumulator.update()` and computes metrics once across the
+accumulated partition. Batches can have different sizes and arrive in any
+order. No averaging of per-batch or per-image metrics is performed.
 
 Inputs are logits or normalized probabilities shaped `[N, C, ...]` and integer
 target masks shaped `[N, ...]`. `input_type` is explicit. The configured
 `ignore_index` and each update's valid-pixel mask are combined. A valid pixel
 must have a label in `[0, C)`. All metrics use the resulting same pixel set.
+For PASTIS, class IDs 0–18 are scored and void label 19 is ignored; explicit
+invalid pixels are excluded even if their stored target falls in 0–18.
 Evaluation detaches tensors and runs under inference mode; no autograd graph is
 retained.
 
-## Definitions
+## Shared definitions and segmentation metrics
 
 Let `p_i` be softmax of logits or the supplied probability vector. Predicted
 class is `argmax_k p_ik`; confidence is `c_i = max_k p_ik`; uncertainty is
@@ -29,6 +30,27 @@ with nonzero union. A class absent from both target and predictions has
 undefined IoU and is excluded; a class absent from targets but predicted at
 least once has IoU zero.
 
+Report the complete per-class IoU vector in class-ID order (0–18), alongside
+target support, predicted count, and union. Represent zero-union classes as
+undefined (`null`), not zero. The mIoU denominator includes only classes with
+nonzero union.
+
+### Overall Accuracy (higher is better)
+
+Overall Accuracy (OA) is `sum_k TP_k / n`, where `n` is the number of valid
+pixels. This is pooled pixel accuracy over the complete partition, not an
+average of image or batch accuracies.
+
+### Macro F1 (higher is better; frozen)
+
+For class `k`, `F1_k = 2 TP_k / (2 TP_k + FP_k + FN_k)`. Use the approved unweighted mean over all 19 valid semantic classes, assigning
+zero when the denominator is zero. This differs from mIoU's exclusion of zero-union classes.
+Retain the per-class vector and support so the aggregation is auditable. The
+class inclusion and zero-denominator convention are frozen; do not silently
+substitute a library default.
+
+## Probabilistic calibration metrics
+
 ### ECE and adaptive top-label ECE (lower is better)
 
 For top-label confidence and correctness `a_i = 1[pred_i = y_i]`,
@@ -36,6 +58,8 @@ For top-label confidence and correctness `a_i = 1[pred_i = y_i]`,
 on `[0,1]`; confidence 1 belongs to the final bin. Per-bin counts, confidence
 sums, and correctness sums are accumulated exactly (up to floating-point sum
 rounding), so ECE does not retain per-pixel records.
+For reproducible assignment use `b = min(floor(15*c_i), 14)`, so bins are
+left-inclusive/right-exclusive except that the final bin includes 1.
 
 The reported `AdaECE` is **adaptive top-label ECE**, not the canonical
 all-class Adaptive Calibration Error (ACE). Canonical ACE bins probabilities
@@ -53,6 +77,19 @@ confidence values, and a large tie group can make bin sizes depart substantially
 from equal mass. AdaECE retains confidence and correctness per valid pixel for
 global sorting.
 
+### Classwise ECE (lower is better; frozen)
+
+For each semantic class `k`, treat `p_ik` as confidence and `1[y_i=k]` as the
+binary outcome over every valid pixel. Use the same 15 equal-width bins on
+`[0,1]`, with 1 included in the last bin. Define
+`ECE_k = sum_b (n_kb/n) * |mean(1[y_i=k])_b - mean(p_ik)_b|`.
+Assign class probability `p_ik` with `b = min(floor(15*p_ik), 14)`.
+Classwise ECE is the unweighted mean of the 19 `ECE_k` values.
+Unlike top-label ECE, every class probability contributes for every pixel.
+Report all per-class values and bin counts. This one-vs-rest fixed-bin
+definition and unweighted class aggregation are frozen. Call this Classwise
+ECE; do not conflate it with top-label ECE or adaptive top-label AdaECE.
+
 ### NLL and multiclass Brier (lower is better)
 
 Categorical NLL is `-(1/n) sum_i log(p_i,y_i)`. Logits use log-softmax. Given
@@ -63,6 +100,14 @@ applied. The multiclass Brier score is
 pixels. NLL and Brier are accumulated as float64 running sums; the confusion
 matrix uses integer counts.
 
+## Error detection and selective prediction
+
+The positive event is an incorrect pixel (`e_i=1`). The error-detection score
+is top-label uncertainty `u_i = 1 - max_k p_ik`; larger values mean more likely
+incorrect. Compute using only the same valid pixels as the segmentation
+metrics. Group exact score ties before threshold calculations so results are
+invariant to pixel order.
+
 ### AUROC and FPR95 for pixel error detection
 
 The positive class is an erroneous pixel (`e_i=1`); larger `u_i` is a more
@@ -72,6 +117,17 @@ discrete threshold with TPR at least 0.95, with no interpolation. Both are
 undefined if the accumulated set has no errors or no correct pixels. The
 aggregate returns `None` for those metrics; standalone AUROC/FPR functions
 raise `ValueError`.
+
+### AUPRC for pixel error detection (higher is better; frozen)
+
+Use non-interpolated average precision. Process unique
+uncertainty thresholds in descending order, add all pixels tied at a threshold
+as one group, and compute
+`AP = sum_j (Recall_j - Recall_(j-1)) * Precision_j`, starting from recall
+zero. This groups ties and does not depend on pixel order. It differs from
+trapezoidal area under linearly interpolated precision-recall points. AUPRC is
+undefined when there are no incorrect pixels. If every valid pixel is
+incorrect, AP is 1.
 
 ### AURC and E-AURC (lower is better)
 
@@ -87,6 +143,9 @@ corresponds to averaging the right-step AURC over all within-tie orderings.
 The optimal ranking accepts all correct pixels before errors. E-AURC is
 observed AURC minus this optimal AURC, with no further normalization. The
 oracle is evaluated with the same right-step convention.
+
+AURC is undefined for an empty valid-pixel set. A dataset with no errors has
+AURC zero; a dataset with all pixels in error has AURC one.
 
 ### AUSE (lower is better)
 
@@ -120,6 +179,11 @@ Temporary disk space must be available, and is removed with the accumulator.
 The implementation uses PyTorch and NumPy, CPU only; no GPU or dataset files
 are needed for metrics computation.
 
+For reproducibility, pool integer confusion/bin counts and float64 sums across
+the complete partition. Ranking metrics must group equal scores before
+integration. Store protocol version, valid-pixel count, software versions, and
+per-class/per-bin diagnostics with each result.
+
 ## Validation and edge cases
 
 Inputs must be finite. Probability vectors must lie in `[0,1]` and sum to one.
@@ -132,6 +196,34 @@ probability gives infinite NLL by definition. AUROC/FPR95 degeneracy and
 single-pixel AUSE are handled explicitly as described above. Floating-point
 accumulators can exhibit negligible summation-order differences; integer
 confusion and bin counts are exact.
+
+For classwise ECE, bins with no pixels contribute zero for that class/bin; a
+class with no positive targets is still defined because its negative examples
+and predicted probabilities contribute. Macro F1 follows its explicitly
+approved zero-denominator rule. For error-detection metrics, AUROC is
+undefined unless both correct and incorrect pixels occur; AUPRC is undefined
+when no incorrect pixel occurs. Return `null` in aggregate outputs for an
+undefined metric and retain the reason. One-class edge cases must not be
+silently converted to a favorable score, except the defined all-error AUPRC=1
+case.
+
+## Partition use and evaluation order
+
+- Training folds fit model weights and training-only normalization.
+- The checkpoint-selection partition is reserved for implementation checks
+  only at evaluation time. Training-time checkpoint selection has already
+  used its prescribed mIoU; do not use these pixels to fit calibrators or make
+  final fold-performance claims.
+- The calibration partition is reserved for fitting approved calibrators
+  after the protocol is frozen. Scores on calibrator-fit pixels are fit-set
+  diagnostics, not independent generalization results.
+- The test partition remains unopened until architecture/checkpoint selection,
+  calibrator, metric definitions, binning, and implementation are frozen. Use
+  it for final raw-probability evaluation and, if approved, a separately
+  identified calibrated evaluation.
+
+No calibration or test partition has been evaluated and no calibrator has
+been fitted under this protocol.
 
 ## References and scope differences
 
@@ -151,10 +243,14 @@ confusion and bin counts are exact.
   oracle ranking; the pixelwise error and integration choices here are explicit
   adaptations for semantic segmentation).
 
-## Remaining scientific decisions
+## Implementation status and provisional future analyses
 
-The researcher-approved initial protocol is implemented. No additional metric
-definition requires approval for this version. Reported results should identify
-the adaptive top-label ECE variant and the tie-averaged ranking conventions,
-because those are specific operational definitions and differ from common
-all-class ACE or arbitrary tie ordering.
+The frozen core metrics are mIoU, overall accuracy, Macro F1, per-class IoU,
+top-label ECE, multiclass Brier, multiclass NLL, Classwise ECE, AUROC, AUPRC,
+and AURC. Report ECE as top-label ECE and AdaECE as adaptive top-label ECE, not
+canonical ACE. Report the tie-grouped Average Precision convention and the
+tie-averaged AURC right-step integration.
+
+Teacher-confidence strata and spatial boundary-distance bands remain
+provisional future teacher-student analyses; they are outside the frozen core
+baseline metric protocol and must not affect baseline evaluation choices.

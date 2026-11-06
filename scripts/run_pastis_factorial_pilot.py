@@ -41,6 +41,23 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _implementation_snapshot(project_root: Path, files: list[str]) -> dict[str, Any]:
+    """Hash the exact source/config inputs for a deliberately uncommitted pilot."""
+    digest = hashlib.sha256()
+    resolved_files = []
+    for relative in sorted(set(files)):
+        path = (project_root / relative).resolve()
+        path.relative_to(project_root.resolve())
+        if not path.is_file():
+            raise FileNotFoundError(f"implementation snapshot input is missing: {path}")
+        digest.update(relative.encode("utf-8") + b"\0")
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        resolved_files.append(relative)
+    return {"sha256": digest.hexdigest(), "files": resolved_files}
+
+
 def _load_catalog(path: Path = CATALOG) -> tuple[dict[str, Any], dict[str, Any]]:
     catalog = _yaml(path)
     project_root = Path(catalog["project_root"]).resolve()
@@ -98,8 +115,14 @@ def _verify_reused_baseline(path: Path) -> None:
         raise ValueError("completed reference does not match the approved run-01 scientific settings")
 
 
-def build_variant_config(model_name: str, variant_name: str, *, catalog: dict[str, Any] | None = None) -> dict[str, Any]:
-    catalog = catalog or _load_catalog()[0]
+def build_variant_config(
+    model_name: str,
+    variant_name: str,
+    *,
+    catalog: dict[str, Any] | None = None,
+    catalog_path: str | Path = CATALOG,
+) -> dict[str, Any]:
+    catalog = catalog or _load_catalog(catalog_path)[0]
     if model_name not in MODELS or variant_name not in VARIANTS:
         raise ValueError("unknown model or pilot variant")
     variant = catalog["variants"][model_name][variant_name]
@@ -124,6 +147,21 @@ def build_variant_config(model_name: str, variant_name: str, *, catalog: dict[st
             raise ValueError(f"pretrained checkpoint hash mismatch: {checkpoint}")
     output_root = Path(catalog["output_root"]).resolve()
     variant_root = output_root / model_name / variant_name
+    pilot_metadata = {
+        "catalog": str(Path(catalog_path).resolve()),
+        "factorial_variant": variant_name,
+        "architecture": model_name,
+        "run": 1,
+        "calibration_and_test_access": False,
+    }
+    deep_reference = (catalog.get("variants", {}).get("deeplabv3plus_resnet50", {})
+                      .get("scratch_no_scheduler", {}).get("reference"))
+    if deep_reference is not None:
+        pilot_metadata["scratch_reference"] = deep_reference
+    if catalog.get("implementation_snapshot_files"):
+        pilot_metadata["implementation_snapshot"] = _implementation_snapshot(
+            project_root, catalog["implementation_snapshot_files"],
+        )
     return {
         "project_root": str(project_root),
         "name": f"pastis_run01_{model_name}_{variant_name}",
@@ -140,31 +178,37 @@ def build_variant_config(model_name: str, variant_name: str, *, catalog: dict[st
         "scheduler": copy.deepcopy(catalog["schedulers"][variant["scheduler"]]),
         "early_stopping": copy.deepcopy(catalog["early_stopping"]),
         "initialization": initialization,
-        "pilot_metadata": {
-            "catalog": str(CATALOG),
-            "factorial_variant": variant_name,
-            "architecture": model_name,
-            "run": 1,
-            "calibration_and_test_access": False,
-            "scratch_reference": catalog["variants"]["deeplabv3plus_resnet50"]["scratch_no_scheduler"]["reference"],
-        },
+        "pilot_metadata": pilot_metadata,
         "checkpoint_dir": str(variant_root / "checkpoints"),
         "resume": None,
     }
 
 
 def _validate_reference(catalog: dict[str, Any]) -> None:
-    reference = Path(catalog["variants"]["deeplabv3plus_resnet50"]["scratch_no_scheduler"]["reference"])
-    _verify_reused_baseline(reference)
+    deep_variants = catalog.get("variants", {}).get("deeplabv3plus_resnet50")
+    if not deep_variants:
+        return
+    reference_variant = deep_variants.get("scratch_no_scheduler", {})
+    if reference_variant.get("action") == "reuse_completed_baseline":
+        _verify_reused_baseline(Path(reference_variant["reference"]))
 
 
-def _run_one(model_name: str, variant_name: str, *, execute: bool, catalog: dict[str, Any]) -> int:
+def _run_one(
+    model_name: str,
+    variant_name: str,
+    *,
+    execute: bool,
+    catalog: dict[str, Any],
+    catalog_path: str | Path = CATALOG,
+) -> int:
     variant = catalog["variants"][model_name][variant_name]
     if variant["action"] == "reuse_completed_baseline":
         _verify_reused_baseline(Path(variant["reference"]))
         print(f"REUSE {model_name}/{variant_name}: {variant['reference']}")
         return 0
-    config = build_variant_config(model_name, variant_name, catalog=catalog)
+    config = build_variant_config(
+        model_name, variant_name, catalog=catalog, catalog_path=catalog_path,
+    )
     variant_root = Path(config["checkpoint_dir"]).parent
     if variant_root.exists():
         raise FileExistsError(f"pilot output already exists; refusing overwrite or implicit resume: {variant_root}")
@@ -193,6 +237,8 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true", help="validate and print commands without creating files")
     mode.add_argument("--execute", action="store_true", help="execute exactly one selected variant")
+    parser.add_argument("--catalog", type=Path, default=CATALOG,
+                        help="pilot catalog; defaults to the original eight-condition catalog")
     parser.add_argument("--model", choices=MODELS)
     parser.add_argument("--variant", choices=VARIANTS)
     args = parser.parse_args()
@@ -200,14 +246,16 @@ def main() -> int:
         parser.error("--execute requires exactly one --model and one --variant selection")
     if (args.model is None) != (args.variant is None):
         parser.error("--model and --variant must be supplied together")
-    catalog, _ = _load_catalog()
+    catalog, _ = _load_catalog(args.catalog)
     _validate_reference(catalog)
     selections = [(args.model, args.variant)] if args.model else [
         (model, variant) for model in MODELS for variant in VARIANTS
     ]
     statuses = []
     for model, variant in selections:
-        statuses.append(_run_one(model, variant, execute=args.execute, catalog=catalog))
+        statuses.append(_run_one(
+            model, variant, execute=args.execute, catalog=catalog, catalog_path=args.catalog,
+        ))
         if statuses[-1]:
             return statuses[-1]
     return 0

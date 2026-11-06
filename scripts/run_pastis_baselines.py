@@ -17,6 +17,7 @@ import math
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -67,6 +68,14 @@ class UnsafeRunState(RuntimeError):
 def canonical_hash(value: Any) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -250,6 +259,9 @@ def verify_run_files(run_root: Path, expected_config: dict[str, Any], *, repair_
     recorded_best = max(float(row["validation"]["mIoU"]) for row in records)
     if not math.isclose(recorded_best, latest_best_metric, rel_tol=0, abs_tol=1e-12):
         raise UnsafeRunState("latest checkpoint best mIoU disagrees with metrics history")
+    recorded_best_epoch = int(max(records, key=lambda row: float(row["validation"]["mIoU"]))["epoch"])
+    if best_epoch != recorded_best_epoch:
+        raise UnsafeRunState("best checkpoint epoch disagrees with the best metrics-history epoch")
     stopped = latest["early_stopping"]["stopped"]
     complete = latest_epoch == MAX_EPOCHS - 1 or stopped
     return {
@@ -379,6 +391,8 @@ def _run_one(
         sys.executable, "-u", "-m", "src.training.runner",
         "--config", str(runner_config),
     ]
+    training_started_utc = datetime.now(timezone.utc).isoformat()
+    training_started_monotonic = time.monotonic()
     try:
         with log_path.open("a", encoding="utf-8") as log:
             log.write(f"\n[{datetime.now(timezone.utc).isoformat()}] command: {' '.join(command)}\n")
@@ -389,19 +403,47 @@ def _run_one(
     finally:
         runner_config.unlink(missing_ok=True)
     if result.returncode != 0:
-        _write_state(root, state, "failed", exit_code=result.returncode)
+        _write_state(
+            root, state, "failed", exit_code=result.returncode,
+            training_started_utc=training_started_utc,
+            training_elapsed_seconds=time.monotonic() - training_started_monotonic,
+            training_finished_utc=datetime.now(timezone.utc).isoformat(),
+        )
         raise RuntimeError(
             f"{key} runner exited {result.returncode}; preserved output at {root}. "
             "A later invocation will resume only if latest.pt is verifiable."
         )
     verified = verify_run_files(root, _strip_resume(config), repair_metrics=False)
     if not verified["complete"]:
-        _write_state(root, state, "failed", latest=str(verified["latest"]))
+        _write_state(
+            root, state, "failed", latest=str(verified["latest"]),
+            training_started_utc=training_started_utc,
+            training_elapsed_seconds=time.monotonic() - training_started_monotonic,
+            training_finished_utc=datetime.now(timezone.utc).isoformat(),
+        )
         raise UnsafeRunState(
             f"{key} runner exited successfully but reached neither epoch 100 nor Early Stopping"
         )
-    _write_state(root, state, "completed", latest=str(verified["latest"]), epoch=verified["epoch"])
-    print(f"COMPLETE {key} at epoch {verified['epoch']} (early_stopped={verified['stopped']})")
+    best_checkpoint = _load_checkpoint(verified["checkpoint_dir"] / "best.pt")
+    best_epoch = int(best_checkpoint["epoch"]) + 1
+    best_miou = float(best_checkpoint["best_validation_miou"])
+    elapsed = time.monotonic() - training_started_monotonic
+    finished_utc = datetime.now(timezone.utc).isoformat()
+    _write_state(
+        root, state, "completed", latest=str(verified["latest"]), epoch=verified["epoch"],
+        best_epoch=best_epoch, final_epoch=verified["epoch"] + 1,
+        best_checkpoint_selection_miou=best_miou,
+        training_started_utc=training_started_utc,
+        training_finished_utc=finished_utc,
+        training_elapsed_seconds=elapsed,
+        best_checkpoint_sha256=file_sha256(verified["checkpoint_dir"] / "best.pt"),
+        latest_checkpoint_sha256=file_sha256(verified["checkpoint_dir"] / "latest.pt"),
+    )
+    print(
+        f"COMPLETE {key}: best_epoch={best_epoch} best_checkpoint_selection_mIoU={best_miou:.6f} "
+        f"final_epoch={verified['epoch'] + 1} elapsed_seconds={elapsed:.1f} "
+        f"early_stopped={verified['stopped']}"
+    )
     return "completed"
 
 

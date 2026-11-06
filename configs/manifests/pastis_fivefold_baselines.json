@@ -1,0 +1,202 @@
+{
+  "schema_version": 2,
+  "study": "PASTIS five-fold selected architecture baselines",
+  "protocol_document": "docs/pastis_fivefold_evaluation_plan.md",
+  "metric_protocol_document": "docs/evaluation_protocol.md",
+  "seed": 2401,
+  "selection_metric": "checkpoint_selection.mIoU",
+  "aggregate_protocol": {
+    "group_by": ["architecture", "evaluation_variant", "partition", "metric"],
+    "fold_count": 5,
+    "statistics": ["mean", "sample_standard_deviation_ddof_1"],
+    "metrics": [
+      "mIoU", "overall_accuracy", "macro_f1", "per_class_iou",
+      "ece_top_label", "multiclass_brier", "multiclass_nll", "classwise_ece",
+      "auroc_error_detection", "auprc_error_detection", "aurc_error_detection"
+    ],
+    "per_class_aggregation": "For each class, aggregate fold IoUs only when union is nonzero; retain n and null for undefined fold values.",
+    "undefined_values": "JSON null with an explicit reason; never coerce undefined values to zero except the approved metric-specific conventions.",
+    "evaluation_variants": ["raw_probabilities", "calibrated_probabilities_if_approved"],
+    "teacher_student_metrics": [
+      "student_mIoU", "delta_mIoU_vs_hard_label_student",
+      "performance_by_teacher_confidence", "boundary_error_and_calibration"
+    ]
+  },
+  "partition_policy": {
+    "checkpoint_selection": "Implementation checks only for evaluation-time work; its training-time mIoU use for checkpoint selection is already complete. Do not report as final performance or use for calibrator fitting.",
+    "calibration": "Reserved for fitting approved calibrators after protocol freeze; fit-set scores are diagnostic only.",
+    "test": "Keep unopened until model/checkpoint, calibrator, metric definitions, binning, and implementation are frozen; then final evaluation only.",
+    "calibration_partition_evaluated": false,
+    "test_partition_evaluated": false,
+    "calibrator_fitted": false
+  },
+  "protocol_freeze": {
+    "status": "core_frozen",
+    "core_approved": true,
+    "core_decisions_requiring_approval": [],
+    "metric_implementation_complete": true,
+    "provisional_future_analyses": {
+      "teacher_confidence_strata": "provisional; outside core baseline metrics",
+      "spatial_boundary_distance_bands": "provisional; outside core baseline metrics",
+      "approval_required_before_future_implementation": true
+    }
+  },
+  "queue": {
+    "script": "scripts/run_pastis_selected_fivefolds.py",
+    "output_root": "/home/wilgomoreira/workspace/partilha_remota/experiments/phd-segmentation-baselines/pastis_full_runs",
+    "order": [
+      "deeplabv3plus_resnet50/run_02",
+      "deeplabv3plus_resnet50/run_03",
+      "deeplabv3plus_resnet50/run_04",
+      "deeplabv3plus_resnet50/run_05",
+      "segformer_b1/run_02",
+      "segformer_b1/run_03",
+      "segformer_b1/run_04",
+      "segformer_b1/run_05"
+    ],
+    "run_01_policy": "Reuse verified existing artifacts; never train run 01 in this queue."
+  },
+  "runs": [
+    {
+      "architecture": "deeplabv3plus_resnet50",
+      "run": 1,
+      "status": "reused_verified",
+      "artifact_root": "/home/wilgomoreira/workspace/partilha_remota/experiments/phd-segmentation-baselines/pastis_full_runs/deeplabv3plus_resnet50/run_01",
+      "dataset_config": "configs/datasets/pastis_run_01.yaml",
+      "model_config": "configs/models/deeplabv3plus.yaml",
+      "initialization": "scratch",
+      "best_checkpoint_selection_miou": 0.25397704129034193
+    },
+    {"architecture": "deeplabv3plus_resnet50", "run": 2, "status": "pending", "dataset_config": "configs/datasets/pastis_run_02.yaml", "model_config": "configs/models/deeplabv3plus.yaml", "initialization": "scratch", "output_root": "<queue.output_root>/deeplabv3plus_resnet50/run_02"},
+    {"architecture": "deeplabv3plus_resnet50", "run": 3, "status": "pending", "dataset_config": "configs/datasets/pastis_run_03.yaml", "model_config": "configs/models/deeplabv3plus.yaml", "initialization": "scratch", "output_root": "<queue.output_root>/deeplabv3plus_resnet50/run_03"},
+    {"architecture": "deeplabv3plus_resnet50", "run": 4, "status": "pending", "dataset_config": "configs/datasets/pastis_run_04.yaml", "model_config": "configs/models/deeplabv3plus.yaml", "initialization": "scratch", "output_root": "<queue.output_root>/deeplabv3plus_resnet50/run_04"},
+    {"architecture": "deeplabv3plus_resnet50", "run": 5, "status": "pending", "dataset_config": "configs/datasets/pastis_run_05.yaml", "model_config": "configs/models/deeplabv3plus.yaml", "initialization": "scratch", "output_root": "<queue.output_root>/deeplabv3plus_resnet50/run_05"},
+    {
+      "architecture": "segformer_b1",
+      "run": 1,
+      "status": "reused_verified",
+      "artifact_root": "/home/wilgomoreira/workspace/partilha_remota/experiments/phd-segmentation-baselines/pastis_run01_segformer_b1_nvlabs_decoder256/segformer_b1/pretrained_no_scheduler",
+      "dataset_config": "configs/datasets/pastis_run_01.yaml",
+      "model_config": "configs/models/segformer_b1_nvlabs.yaml",
+      "decoder_profile": "nvlabs_reference",
+      "decoder_channels": 256,
+      "initialization": "nvidia_mit_b1_imagenet1k",
+      "best_checkpoint_selection_miou": 0.2592428493862265
+    },
+    {"architecture": "segformer_b1", "run": 2, "status": "pending", "dataset_config": "configs/datasets/pastis_run_02.yaml", "model_config": "configs/models/segformer_b1_nvlabs.yaml", "decoder_profile": "nvlabs_reference", "decoder_channels": 256, "initialization": "nvidia_mit_b1_imagenet1k", "output_root": "<queue.output_root>/segformer_b1/run_02"},
+    {"architecture": "segformer_b1", "run": 3, "status": "pending", "dataset_config": "configs/datasets/pastis_run_03.yaml", "model_config": "configs/models/segformer_b1_nvlabs.yaml", "decoder_profile": "nvlabs_reference", "decoder_channels": 256, "initialization": "nvidia_mit_b1_imagenet1k", "output_root": "<queue.output_root>/segformer_b1/run_03"},
+    {"architecture": "segformer_b1", "run": 4, "status": "pending", "dataset_config": "configs/datasets/pastis_run_04.yaml", "model_config": "configs/models/segformer_b1_nvlabs.yaml", "decoder_profile": "nvlabs_reference", "decoder_channels": 256, "initialization": "nvidia_mit_b1_imagenet1k", "output_root": "<queue.output_root>/segformer_b1/run_04"},
+    {"architecture": "segformer_b1", "run": 5, "status": "pending", "dataset_config": "configs/datasets/pastis_run_05.yaml", "model_config": "configs/models/segformer_b1_nvlabs.yaml", "decoder_profile": "nvlabs_reference", "decoder_channels": 256, "initialization": "nvidia_mit_b1_imagenet1k", "output_root": "<queue.output_root>/segformer_b1/run_05"}
+  ],
+  "fold_protocol": {
+    "config_pattern": "configs/datasets/pastis_run_{run:02d}.yaml",
+    "normalization_pattern": "configs/normalization/pastis_run_{run:02d}.json",
+    "normalization_fit": "training folds only, selected 2019-05-15 S2 planes",
+    "partitions": ["train", "checkpoint_selection", "calibration", "test"]
+  },
+  "results": {
+    "metric_groups": {
+      "segmentation": ["mIoU", "overall_accuracy", "macro_f1", "per_class_iou"],
+      "probabilistic_calibration": ["ece_top_label", "multiclass_brier", "multiclass_nll", "classwise_ece"],
+      "error_detection_and_selective_prediction": ["auroc_error_detection", "auprc_error_detection", "aurc_error_detection"]
+    },
+    "per_run_record_template": {
+      "implementation_checks": {
+        "partition": "checkpoint_selection",
+        "scientific_performance_reported": false,
+        "checks": [],
+        "checkpoint_sha256": null,
+        "valid_pixel_count": null
+      },
+      "calibration_fit": {
+        "partition": "calibration",
+        "method": null,
+        "parameters": null,
+        "checkpoint_sha256": null,
+        "fit_pixel_count": null,
+        "fit_set_metrics_are_diagnostic_only": true
+      },
+      "test_raw_probabilities": {
+        "partition": "test",
+        "evaluated": false,
+        "valid_pixel_count": null,
+        "mIoU": null,
+        "overall_accuracy": null,
+        "macro_f1": null,
+        "per_class_iou_class_ids_0_to_18": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null],
+        "ece_top_label": null,
+        "ece_bin_diagnostics": [],
+        "multiclass_brier": null,
+        "multiclass_nll": null,
+        "classwise_ece_macro": null,
+        "classwise_ece_by_class_0_to_18": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null],
+        "classwise_ece_bin_diagnostics": [],
+        "auroc_error_detection": null,
+        "auprc_error_detection": null,
+        "aurc_error_detection": null,
+        "undefined_metric_reasons": {}
+      },
+      "test_calibrated_probabilities": {
+        "evaluated": false,
+        "calibrator_method": null,
+        "calibrator_parameters_reference": null,
+        "partition": "test",
+        "valid_pixel_count": null,
+        "mIoU": null,
+        "overall_accuracy": null,
+        "macro_f1": null,
+        "per_class_iou_class_ids_0_to_18": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null],
+        "ece_top_label": null,
+        "ece_bin_diagnostics": [],
+        "multiclass_brier": null,
+        "multiclass_nll": null,
+        "classwise_ece_macro": null,
+        "classwise_ece_by_class_0_to_18": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null],
+        "classwise_ece_bin_diagnostics": [],
+        "auroc_error_detection": null,
+        "auprc_error_detection": null,
+        "aurc_error_detection": null,
+        "undefined_metric_reasons": {}
+      },
+      "teacher_student_future": {
+        "status": "not_started",
+        "student_mIoU": null,
+        "hard_label_student_mIoU": null,
+        "delta_mIoU": null,
+        "teacher_confidence_strata": [],
+        "boundary_analysis": []
+      }
+    },
+    "aggregate_template": {
+      "per_architecture_evaluation_variant_partition": {
+        "mIoU": {"mean": null, "std_ddof_1": null, "n": 0},
+        "overall_accuracy": {"mean": null, "std_ddof_1": null, "n": 0},
+        "macro_f1": {"mean": null, "std_ddof_1": null, "n": 0},
+        "per_class_iou_template_repeated_for_class_ids_0_to_18": {"mean": null, "std_ddof_1": null, "n": 0},
+        "ece_top_label": {"mean": null, "std_ddof_1": null, "n": 0},
+        "multiclass_brier": {"mean": null, "std_ddof_1": null, "n": 0},
+        "multiclass_nll": {"mean": null, "std_ddof_1": null, "n": 0},
+        "classwise_ece_macro": {"mean": null, "std_ddof_1": null, "n": 0},
+        "classwise_ece_template_repeated_for_class_ids_0_to_18": {"mean": null, "std_ddof_1": null, "n": 0},
+        "auroc_error_detection": {"mean": null, "std_ddof_1": null, "n": 0},
+        "auprc_error_detection": {"mean": null, "std_ddof_1": null, "n": 0},
+        "aurc_error_detection": {"mean": null, "std_ddof_1": null, "n": 0}
+      }
+    },
+    "teacher_student_aggregate_template": {
+      "student_mIoU": {"mean": null, "std_ddof_1": null, "n": 0},
+      "hard_label_student_mIoU": {"mean": null, "std_ddof_1": null, "n": 0},
+      "delta_mIoU_percentage_points": {"mean": null, "std_ddof_1": null, "n": 0},
+      "by_teacher_confidence_stratum": [],
+      "by_boundary_distance_stratum": []
+    }
+  },
+  "evaluation_status": {
+    "checkpoint_selection_used_for_implementation_checks_only": true,
+    "calibration_partition_evaluated": false,
+    "test_partition_evaluated": false,
+    "calibrator_fitted": false,
+    "temperature_scaling_applied": false,
+    "teacher_student_analysis_started": false
+  }
+}

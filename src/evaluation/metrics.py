@@ -8,7 +8,7 @@ returns per-class IoUs when requested.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 import torch
 import numpy as np
@@ -147,6 +147,51 @@ def ece(confidence: Tensor, correct: Tensor, bin_count: int = 15) -> float:
     return _bin_error(confidence, correct, bin_count, adaptive=False)
 
 
+def _classwise_ece_from_flat_probs(probs: Tensor, target: Tensor, bin_count: int) -> list[float]:
+    """One-vs-rest fixed-bin ECE for every class in a flat probability matrix."""
+    if not isinstance(bin_count, int) or isinstance(bin_count, bool) or bin_count <= 0:
+        raise ValueError("bin_count must be a positive integer")
+    if probs.ndim != 2 or target.ndim != 1 or probs.shape[0] != target.numel():
+        raise ValueError("probs must be [N, C] and target must be [N]")
+    if probs.shape[0] == 0:
+        raise ValueError("cannot calculate classwise ECE on an empty sample")
+    n, classes = probs.shape
+    values: list[float] = []
+    for class_id in range(classes):
+        confidence = probs[:, class_id].to(torch.float64)
+        ids = torch.clamp((confidence * bin_count).to(torch.long), max=bin_count - 1)
+        counts = torch.bincount(ids, minlength=bin_count).to(torch.float64)
+        confidence_sums = torch.bincount(ids, weights=confidence, minlength=bin_count)
+        positive_sums = torch.bincount(
+            ids, weights=(target == class_id).to(torch.float64), minlength=bin_count,
+        )
+        nonempty = counts > 0
+        gaps = (positive_sums[nonempty] / counts[nonempty]
+                - confidence_sums[nonempty] / counts[nonempty]).abs()
+        values.append(float((gaps * counts[nonempty] / n).sum().item()))
+    return values
+
+
+def classwise_ece(
+    scores: Tensor,
+    target: Tensor,
+    num_classes: int,
+    *,
+    input_type: InputType,
+    ignore_index: int | None = None,
+    valid_mask: Tensor | None = None,
+    bin_count: int = 15,
+    return_per_class: bool = False,
+) -> float | tuple[float, list[float]]:
+    """Macro one-vs-rest ECE over all classes using fixed equal-width bins."""
+    probs, _, truth = _validate_input(
+        scores, target, num_classes, input_type, ignore_index, valid_mask,
+    )
+    per_class = _classwise_ece_from_flat_probs(probs, truth, bin_count)
+    result = sum(per_class) / num_classes
+    return (result, per_class) if return_per_class else result
+
+
 def adaptive_ece(confidence: Tensor, correct: Tensor, bin_count: int = 15) -> float:
     """Top-label adaptive ECE using equal-mass bins, merging small samples."""
     return _bin_error(confidence, correct, bin_count, adaptive=True)
@@ -202,6 +247,73 @@ def mean_iou(
     return result
 
 
+def _confusion_for_labels(
+    prediction: Tensor,
+    target: Tensor,
+    num_classes: int,
+    ignore_index: int | None,
+    valid_mask: Tensor | None,
+) -> Tensor:
+    if not isinstance(prediction, Tensor) or not isinstance(target, Tensor):
+        raise TypeError("prediction and target must be torch.Tensor instances")
+    if prediction.shape != target.shape:
+        raise ValueError("prediction and target must have identical shapes")
+    if not isinstance(num_classes, int) or isinstance(num_classes, bool) or num_classes < 2:
+        raise ValueError("num_classes must be an integer >= 2")
+    if prediction.is_floating_point() or prediction.is_complex():
+        raise TypeError("prediction must contain integer class indices")
+    if target.is_floating_point() or target.is_complex():
+        raise TypeError("target must contain integer class indices")
+    pred = prediction.to(torch.long)
+    truth = target.to(device=pred.device, dtype=torch.long)
+    valid = torch.ones_like(truth, dtype=torch.bool)
+    if valid_mask is not None:
+        if not isinstance(valid_mask, Tensor) or valid_mask.shape != truth.shape:
+            raise ValueError("valid_mask must be a tensor with the same shape as target")
+        valid &= valid_mask.to(device=pred.device, dtype=torch.bool)
+    if ignore_index is not None:
+        valid &= truth != ignore_index
+    if not bool(valid.any()):
+        raise ValueError("no valid pixels remain after applying masks")
+    pred, truth = pred[valid], truth[valid]
+    if bool(((pred < 0) | (pred >= num_classes) | (truth < 0) | (truth >= num_classes)).any()):
+        raise ValueError("valid prediction and target labels must be in [0, num_classes)")
+    return torch.bincount(
+        truth * num_classes + pred, minlength=num_classes**2,
+    ).reshape(num_classes, num_classes)
+
+
+def overall_accuracy(
+    prediction: Tensor,
+    target: Tensor,
+    num_classes: int,
+    ignore_index: int | None = None,
+    valid_mask: Tensor | None = None,
+) -> float:
+    """Pooled pixel accuracy over valid, non-ignored pixels."""
+    cm = _confusion_for_labels(prediction, target, num_classes, ignore_index, valid_mask)
+    return float(cm.diag().sum().to(torch.float64).div(cm.sum()).item())
+
+
+def macro_f1(
+    prediction: Tensor,
+    target: Tensor,
+    num_classes: int,
+    ignore_index: int | None = None,
+    valid_mask: Tensor | None = None,
+    *,
+    return_per_class: bool = False,
+) -> float | tuple[float, list[float]]:
+    """Unweighted F1 over every class; zero-denominator classes receive zero."""
+    cm = _confusion_for_labels(prediction, target, num_classes, ignore_index, valid_mask).to(torch.float64)
+    tp = cm.diag()
+    denominator = 2 * tp + cm.sum(0) - tp + cm.sum(1) - tp
+    per_class = torch.where(denominator > 0, 2 * tp / denominator.clamp_min(1), 0.0)
+    result = float(per_class.mean().item())
+    values = [float(value) for value in per_class]
+    return (result, values) if return_per_class else result
+
+
 def _prediction_errors(probs: Tensor, target: Tensor) -> tuple[Tensor, Tensor]:
     confidence, prediction = probs.max(dim=1)
     error = prediction != target
@@ -247,6 +359,45 @@ def auroc_error_detection(uncertainty: Tensor, error: Tensor) -> float:
     """AUROC for error detection; error is positive and larger uncertainty is positive."""
     fpr, tpr = _binary_roc(uncertainty.reshape(-1), error.reshape(-1))
     return float(torch.trapezoid(tpr, fpr).item())
+
+
+def auprc_error_detection(uncertainty: Tensor, error: Tensor) -> float:
+    """Tie-grouped non-interpolated average precision; incorrect pixels are positive."""
+    if not isinstance(uncertainty, Tensor) or not isinstance(error, Tensor):
+        raise TypeError("uncertainty and error must be torch.Tensor instances")
+    if uncertainty.shape != error.shape or uncertainty.device != error.device:
+        raise ValueError("uncertainty and error must have identical shapes and devices")
+    if error.dtype != torch.bool:
+        raise TypeError("error must be a boolean tensor")
+    scores = uncertainty.reshape(-1)
+    positive = error.reshape(-1)
+    if scores.numel() == 0:
+        raise ValueError("AUPRC is undefined for an empty sample")
+    if not scores.is_floating_point() or not bool(torch.isfinite(scores).all()):
+        raise ValueError("uncertainty must contain finite floating point values")
+    if bool(((scores < 0) | (scores > 1)).any()):
+        raise ValueError("uncertainty values must be in [0, 1]")
+    positives = int(positive.sum().item())
+    if positives == 0:
+        raise ValueError("AUPRC is undefined when there are no incorrect pixels")
+    order = torch.argsort(scores, descending=True, stable=True)
+    ordered_scores = scores[order]
+    ordered_positive = positive[order].to(torch.float64)
+    group_ends = torch.ones_like(ordered_scores, dtype=torch.bool)
+    if ordered_scores.numel() > 1:
+        group_ends[:-1] = ordered_scores[:-1] != ordered_scores[1:]
+    ends = torch.nonzero(group_ends, as_tuple=False).flatten() + 1
+    cumulative_tp = torch.cat((
+        torch.zeros(1, dtype=torch.float64, device=scores.device),
+        ordered_positive.cumsum(0)[ends - 1],
+    ))
+    cumulative_fp = torch.cat((
+        torch.zeros(1, dtype=torch.float64, device=scores.device),
+        (1 - ordered_positive).cumsum(0)[ends - 1],
+    ))
+    recall = cumulative_tp / positives
+    precision = cumulative_tp / (cumulative_tp + cumulative_fp).clamp_min(1)
+    return float(((recall[1:] - recall[:-1]) * precision[1:]).sum().item())
 
 
 def fpr_at_tpr(uncertainty: Tensor, error: Tensor, tpr_target: float = 0.95) -> float:
@@ -342,15 +493,45 @@ def sparsification_ause(uncertainty: Tensor, error: Tensor) -> float:
     return float((torch.trapezoid(gap, dx=1.0 / n)).item())
 
 
-def multiclass_nll(log_probs: Tensor, target: Tensor) -> float:
-    """Mean categorical negative log-likelihood, allowing +infinity for zero p(y)."""
-    return float((-log_probs.gather(1, target[:, None]).mean()).item())
+def multiclass_nll(
+    scores: Tensor,
+    target: Tensor,
+    *,
+    input_type: InputType = "logits",
+) -> float:
+    """Mean categorical NLL; logits use stable log_softmax and probabilities are unclipped."""
+    if scores.ndim != 2 or target.ndim != 1 or scores.shape[0] != target.numel():
+        raise ValueError("scores must be [N, C] and target must be [N]")
+    if target.is_floating_point() or target.is_complex():
+        raise TypeError("target must contain integer class indices")
+    if input_type == "logits":
+        if not scores.is_floating_point() or not bool(torch.isfinite(scores).all()):
+            raise ValueError("logits must be finite floating point values")
+        log_probs = torch.log_softmax(scores, dim=1)
+    elif input_type == "probabilities":
+        if not scores.is_floating_point() or not bool(torch.isfinite(scores).all()):
+            raise ValueError("probabilities must be finite floating point values")
+        if bool(((scores < 0) | (scores > 1)).any()):
+            raise ValueError("probabilities must be in [0, 1]")
+        tolerance = max(1e-6, 2 * torch.finfo(scores.dtype).eps)
+        if not torch.allclose(
+            scores.sum(1), torch.ones(scores.shape[0], device=scores.device, dtype=scores.dtype),
+            rtol=tolerance, atol=tolerance,
+        ):
+            raise ValueError("each probability vector must sum to 1")
+        log_probs = torch.log(scores)
+    else:
+        raise ValueError("input_type must be 'logits' or 'probabilities'")
+    target = target.to(device=scores.device, dtype=torch.long)
+    if bool(((target < 0) | (target >= scores.shape[1])).any()):
+        raise ValueError("target labels must be in [0, num_classes)")
+    return float((-log_probs.gather(1, target[:, None]).to(torch.float64).mean()).item())
 
 
 def brier_score(probs: Tensor, target: Tensor) -> float:
     """Mean multiclass Brier score (sum over classes, then mean over pixels)."""
-    one_hot = torch.nn.functional.one_hot(target, num_classes=probs.shape[1]).to(probs.dtype)
-    return float(((probs - one_hot).square().sum(dim=1)).mean().item())
+    one_hot = torch.nn.functional.one_hot(target.to(torch.long), num_classes=probs.shape[1]).to(torch.float64)
+    return float(((probs.to(torch.float64) - one_hot).square().sum(dim=1)).mean().item())
 
 
 _RECORD_DTYPE = np.dtype([("confidence", "<f8"), ("uncertainty", "<f8"), ("error", "u1")])
@@ -403,6 +584,9 @@ class SegmentationMetricAccumulator:
         self.ece_count = np.zeros(self.ece_bins, dtype=np.int64)
         self.ece_confidence_sum = np.zeros(self.ece_bins, dtype=np.float64)
         self.ece_correct_sum = np.zeros(self.ece_bins, dtype=np.float64)
+        self.class_ece_count = np.zeros((self.num_classes, self.ece_bins), dtype=np.int64)
+        self.class_ece_probability_sum = np.zeros((self.num_classes, self.ece_bins), dtype=np.float64)
+        self.class_ece_positive_sum = np.zeros((self.num_classes, self.ece_bins), dtype=np.float64)
         self.nll_sum = 0.0
         self.brier_sum = 0.0
         self.pixel_count = 0
@@ -444,6 +628,22 @@ class SegmentationMetricAccumulator:
             self.ece_count += np.bincount(bin_ids, minlength=self.ece_bins)
             self.ece_confidence_sum += np.bincount(bin_ids, weights=conf_cpu, minlength=self.ece_bins)
             self.ece_correct_sum += np.bincount(bin_ids, weights=(~error_cpu).astype(np.float64), minlength=self.ece_bins)
+            probability_cpu = probs.cpu().numpy()
+            truth_cpu = truth.cpu().numpy()
+            for class_id in range(self.num_classes):
+                class_probability = probability_cpu[:, class_id]
+                class_bins = np.minimum(
+                    (class_probability * self.ece_bins).astype(np.int64), self.ece_bins - 1,
+                )
+                self.class_ece_count[class_id] += np.bincount(
+                    class_bins, minlength=self.ece_bins,
+                )
+                self.class_ece_probability_sum[class_id] += np.bincount(
+                    class_bins, weights=class_probability.astype(np.float64), minlength=self.ece_bins,
+                )
+                self.class_ece_positive_sum[class_id] += np.bincount(
+                    class_bins, weights=(truth_cpu == class_id).astype(np.float64), minlength=self.ece_bins,
+                )
             records = np.empty(conf_cpu.size, dtype=_RECORD_DTYPE)
             records["confidence"] = conf_cpu
             records["uncertainty"] = uncertainty.cpu().numpy()
@@ -462,41 +662,132 @@ class SegmentationMetricAccumulator:
             return np.empty(0, dtype=_RECORD_DTYPE)
         return np.memmap(self._record_path, dtype=_RECORD_DTYPE, mode="r", shape=(self.pixel_count,))
 
-    def compute(self) -> dict[str, float | None]:
+    def compute(self) -> dict[str, Any]:
         """Return current global metrics without changing accumulated state."""
         n = self.pixel_count
         if n == 0:
             raise ValueError("cannot compute metrics before adding valid pixels")
         cm = self.confusion.to(torch.float64)
         tp = cm.diag()
+        target_count = cm.sum(1)
+        predicted_count = cm.sum(0)
         union = cm.sum(0) + cm.sum(1) - tp
         present = union > 0
         miou = float((tp[present] / union[present]).mean().item())
+        per_class_iou = [float(tp[i] / union[i]) if bool(present[i]) else None
+                         for i in range(self.num_classes)]
+        undefined_reasons: dict[str, str] = {
+            f"per_class_IoU_class_{i}": "class has zero target and prediction union"
+            for i in range(self.num_classes) if not bool(present[i])
+        }
+        f1_denominator = target_count + predicted_count
+        per_class_f1 = torch.where(
+            f1_denominator > 0, 2 * tp / f1_denominator.clamp_min(1), 0.0,
+        )
+        macro_f1_value = float(per_class_f1.mean().item())
+        accuracy = float(tp.sum().div(n).item())
         ece_gaps = np.abs(
             self.ece_correct_sum[self.ece_count > 0] / self.ece_count[self.ece_count > 0]
             - self.ece_confidence_sum[self.ece_count > 0] / self.ece_count[self.ece_count > 0]
         )
         ece_value = float(np.sum(ece_gaps * self.ece_count[self.ece_count > 0]) / n)
+        ece_bin_diagnostics = []
+        for bin_id, count in enumerate(self.ece_count):
+            if count:
+                mean_confidence = float(self.ece_confidence_sum[bin_id] / count)
+                mean_accuracy = float(self.ece_correct_sum[bin_id] / count)
+                gap = abs(mean_accuracy - mean_confidence)
+                contribution = float(count / n * gap)
+            else:
+                mean_confidence = mean_accuracy = gap = None
+                contribution = 0.0
+            ece_bin_diagnostics.append({
+                "bin": bin_id,
+                "lower": bin_id / self.ece_bins,
+                "upper": (bin_id + 1) / self.ece_bins,
+                "count": int(count),
+                "mean_confidence": mean_confidence,
+                "mean_accuracy": mean_accuracy,
+                "absolute_gap": gap,
+                "ece_contribution": contribution,
+            })
+        classwise_values: list[float] = []
+        classwise_bin_diagnostics: list[list[dict[str, Any]]] = []
+        for class_id in range(self.num_classes):
+            counts = self.class_ece_count[class_id]
+            nonempty = counts > 0
+            gaps = np.abs(
+                self.class_ece_positive_sum[class_id, nonempty] / counts[nonempty]
+                - self.class_ece_probability_sum[class_id, nonempty] / counts[nonempty]
+            )
+            classwise_values.append(float(np.sum(gaps * counts[nonempty] / n)))
+            class_bins: list[dict[str, Any]] = []
+            for bin_id, count in enumerate(counts):
+                if count:
+                    mean_probability = float(self.class_ece_probability_sum[class_id, bin_id] / count)
+                    empirical_rate = float(self.class_ece_positive_sum[class_id, bin_id] / count)
+                    gap = abs(empirical_rate - mean_probability)
+                    contribution = float(count / n * gap)
+                else:
+                    mean_probability = empirical_rate = gap = None
+                    contribution = 0.0
+                class_bins.append({
+                    "bin": bin_id,
+                    "lower": bin_id / self.ece_bins,
+                    "upper": (bin_id + 1) / self.ece_bins,
+                    "count": int(count),
+                    "mean_probability": mean_probability,
+                    "empirical_rate": empirical_rate,
+                    "absolute_gap": gap,
+                    "ece_contribution": contribution,
+                })
+            classwise_bin_diagnostics.append(class_bins)
+        classwise_ece_value = float(np.mean(classwise_values))
         records = self._records()
         conf = np.asarray(records["confidence"])
         unc = np.asarray(records["uncertainty"])
         err = np.asarray(records["error"], dtype=bool)
         adaece = _adaptive_ece_numpy(conf, ~err, self.adaptive_ece_bins)
-        auroc, fpr95 = _roc_numpy(unc, err) if err.any() and (~err).any() else (None, None)
+        if err.any() and (~err).any():
+            auroc, fpr95 = _roc_numpy(unc, err)
+        else:
+            auroc = fpr95 = None
+            undefined_reasons["AUROC"] = "requires at least one incorrect and one correct valid pixel"
+            undefined_reasons["FPR95"] = "requires at least one incorrect and one correct valid pixel"
+        auprc = _auprc_numpy(unc, err) if err.any() else None
+        if auprc is None:
+            undefined_reasons["AUPRC"] = "requires at least one incorrect valid pixel"
         aurc = _aurc_numpy(unc, err)
         eaurc = aurc - _aurc_numpy(err.astype(np.float64), err)
-        ause = _ause_numpy(unc, err)
+        if n >= 2:
+            ause = _ause_numpy(unc, err)
+        else:
+            ause = None
+            undefined_reasons["AUSE"] = "requires at least two valid pixels"
         return {
             "mIoU": miou,
+            "OverallAccuracy": accuracy,
+            "MacroF1": macro_f1_value,
+            "per_class_IoU": per_class_iou,
+            "per_class_F1": [float(value) for value in per_class_f1],
+            "per_class_support": [int(value) for value in target_count],
+            "per_class_predicted_count": [int(value) for value in predicted_count],
+            "per_class_union": [int(value) for value in union],
             "ECE": ece_value,
+            "ECE_bin_diagnostics": ece_bin_diagnostics,
+            "ClasswiseECE": classwise_ece_value,
+            "ClasswiseECE_per_class": classwise_values,
+            "ClasswiseECE_bin_diagnostics": classwise_bin_diagnostics,
             "AdaECE": adaece,
             "NLL": self.nll_sum / n,
             "Brier": self.brier_sum / n,
             "AUROC": auroc,
+            "AUPRC": auprc,
             "AURC": aurc,
             "E-AURC": eaurc,
             "AUSE": ause,
             "FPR95": fpr95,
+            "undefined_metric_reasons": undefined_reasons,
         }
 
 
@@ -563,6 +854,23 @@ def _ause_numpy(uncertainty: np.ndarray, error: np.ndarray) -> float:
     return float(np.sum((gap[:-1] + gap[1:]) * (0.5 / n)))
 
 
+def _auprc_numpy(uncertainty: np.ndarray, error: np.ndarray) -> float:
+    """Tie-grouped non-interpolated average precision for error detection."""
+    positives = int(error.sum())
+    if positives == 0:
+        raise ValueError("AUPRC is undefined when there are no incorrect pixels")
+    order = np.argsort(-uncertainty, kind="stable")
+    scores = uncertainty[order]
+    positive = error[order].astype(np.int64)
+    ends = np.r_[np.flatnonzero(scores[:-1] != scores[1:]), scores.size - 1]
+    true_positives = np.cumsum(positive)[ends]
+    false_positives = np.cumsum(1 - positive)[ends]
+    previous_true_positives = np.r_[0, true_positives[:-1]]
+    recall_increment = (true_positives - previous_true_positives) / positives
+    precision = true_positives / (true_positives + false_positives)
+    return float(np.sum(recall_increment * precision))
+
+
 def _roc_numpy(scores: np.ndarray, positive: np.ndarray) -> tuple[float, float]:
     n_pos = int(positive.sum())
     n_neg = positive.size - n_pos
@@ -588,7 +896,7 @@ def compute_metrics(
     valid_mask: Tensor | None = None,
     ece_bins: int = 15,
     adaptive_ece_bins: int = 15,
-) -> dict[str, float | None]:
+) -> dict[str, Any]:
     """Convenience one-batch wrapper around the dataset-level accumulator."""
     accumulator = SegmentationMetricAccumulator(
         num_classes,

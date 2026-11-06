@@ -159,13 +159,22 @@ class _MiTEncoder(nn.Module):
 
 class _SegFormerDecoder(nn.Module):
     def __init__(self, dimensions: tuple[int, ...], num_classes: int,
-                 embed_dim: int = 256, channels: int = 128) -> None:
+                 embed_dim: int = 256, channels: int = 128,
+                 profile: str = "legacy_128") -> None:
         super().__init__()
+        if profile not in {"legacy_128", "nvlabs_reference"}:
+            raise ValueError("decoder profile must be 'legacy_128' or 'nvlabs_reference'")
+        if profile == "nvlabs_reference" and (embed_dim != 256 or channels != 256):
+            raise ValueError("the NVlabs SegFormer head requires embed_dim=256 and fusion channels=256")
         self.projections = nn.ModuleList([nn.Linear(dim, embed_dim) for dim in dimensions])
-        self.embed_dim, self.channels = embed_dim, channels
+        self.embed_dim, self.channels, self.profile = embed_dim, channels, profile
+        self.concatenation_order = ("C4", "C3", "C2", "C1") if profile == "nvlabs_reference" else (
+            "C1", "C2", "C3", "C4"
+        )
+        norm = nn.SyncBatchNorm if profile == "nvlabs_reference" else nn.BatchNorm2d
         self.fuse = nn.Sequential(
             nn.Conv2d(embed_dim * len(dimensions), channels, 1, bias=False),
-            nn.BatchNorm2d(channels), nn.ReLU(inplace=True), nn.Dropout2d(0.1),
+            norm(channels), nn.ReLU(inplace=True), nn.Dropout2d(0.1),
         )
         self.classifier = nn.Conv2d(channels, num_classes, 1)
         nn.init.normal_(self.classifier.weight, mean=0.0, std=0.01)
@@ -175,12 +184,16 @@ class _SegFormerDecoder(nn.Module):
         target_size = features[0].shape[-2:]
         projected = []
         for feature, projection in zip(features, self.projections):
+            feature_size = feature.shape[-2:]
             feature = projection(feature.flatten(2).transpose(1, 2))
             feature = feature.transpose(1, 2).reshape(
-                feature.shape[0], -1, *features[len(projected)].shape[-2:]
+                feature.shape[0], -1, *feature_size
             )
             feature = F.interpolate(feature, size=target_size, mode="bilinear", align_corners=False)
             projected.append(feature)
+        if self.profile == "nvlabs_reference":
+            # NVlabs SegFormerHead concatenates the coarsest feature first.
+            projected.reverse()
         return self.classifier(self.fuse(torch.cat(projected, dim=1)))
 
 
@@ -194,6 +207,7 @@ class SegFormerB1(nn.Module):
 
     def __init__(self, num_classes: int, in_channels: int, *, pretrained: bool = False,
                  decoder_hidden_size: int = 256, decoder_channels: int = 128,
+                 decoder_profile: str = "legacy_128",
                  norm_eps: float = 1e-6, drop_path_rate: float = 0.1) -> None:
         super().__init__()
         if num_classes < 1 or in_channels < 1:
@@ -208,7 +222,10 @@ class SegFormerB1(nn.Module):
                 not 0 <= drop_path_rate < 1):
             raise ValueError("invalid SegFormer decoder or normalization parameters")
         self.encoder = _MiTEncoder(in_channels, norm_eps=norm_eps, drop_path_rate=drop_path_rate)
-        self.decoder = _SegFormerDecoder(self.encoder.dims, num_classes, decoder_hidden_size, decoder_channels)
+        self.decoder_profile = decoder_profile
+        self.decoder = _SegFormerDecoder(
+            self.encoder.dims, num_classes, decoder_hidden_size, decoder_channels, decoder_profile,
+        )
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         if images.ndim != 4 or images.shape[1] != self.in_channels:

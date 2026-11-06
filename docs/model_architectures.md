@@ -38,22 +38,38 @@ drop-path ramp 0 to 0.1, and the NVlabs MiT truncated-normal/LayerNorm/Conv
 initialization. Each stage has the official post-block LayerNorm before its
 feature map is returned.
 
-The B1 decoder projects each stage to 256 channels, resizes to stage 1,
-concatenates the four maps, then fuses them to 128 channels before the
-classifier. The projection and fusion dimensions are explicit in
-`configs/models/segformer_b1.yaml`. Lower-resolution logits are bilinearly
-resized to input dimensions (`align_corners=False`). Supported model YAML
-fields are applied by the factory; unknown keys and changes to fixed MiT-B1
-structure are rejected.
+The historical project decoder (`decoder_profile: legacy_128`, the default)
+projects each stage to 256 channels, resizes to stage 1, concatenates in C1 to
+C4 order, then fuses to 128 channels with BatchNorm2d before classification.
+This exact profile remains in `configs/models/segformer_b1.yaml` so the
+original four SegFormer factorial results remain reproducible.
+
+The additive `decoder_profile: nvlabs_reference` in
+`configs/models/segformer_b1_nvlabs.yaml` matches the NVlabs B1 head topology:
+four independent linear projections to 256 channels; bilinear resize to the
+1/4-resolution C1 map; C4, C3, C2, C1 concatenation; a 1024-to-256 1x1 fusion
+convolution; SyncBatchNorm, ReLU, and 0.1 dropout; then a 1x1 classifier.
+Logits are bilinearly resized to the input size with `align_corners=False`.
+The reference B1 config has `decoder_params.embed_dim=256`; the head source
+uses that value as both projection width and fusion output width. Its separate
+`channels=128` config entry is not used for the SegFormerHead fusion width.
+For the single-GPU pilot, SyncBatchNorm has the same batch statistics behavior
+as ordinary BatchNorm2d while retaining the reference module type.
+
+The MiT-B1 encoder topology is unchanged across profiles: depths `[2,2,2,2]`,
+dimensions `[64,128,320,512]`, heads `[1,2,5,8]`, reduction ratios `[8,4,2,1]`,
+overlapping patch kernels `[7,3,3,3]`, strides `[4,2,2,2]`, MLP ratio 4,
+LayerNorm epsilon `1e-6`, and drop-path ramp 0 to 0.1. The new pilot changes
+only the declared decoder profile. Both model YAML profiles are explicit and
+unknown keys or changes to fixed MiT-B1 structure are rejected.
 
 ### Remaining differences from NVlabs/MMSEG
 
 - The classifier is configured for the project's class count and the first
   patch projection is initialized for 4 or 10 channels; no ADE pretrained
   checkpoint is loaded or RGB kernel adaptation is attempted.
-- The decoder uses ordinary `BatchNorm2d` rather than MMSEG's configured
-  `SyncBN`, since this implementation is local and can run on CPU. This can
-  affect training statistics and distributed comparability.
+- The historical `legacy_128` profile uses ordinary `BatchNorm2d`; the
+  `nvlabs_reference` profile uses the configured `SyncBatchNorm` module.
 - Attention uses separate query and key/value Linear modules rather than the
   official combined QKV module. The computation is equivalent when weights are
   mapped, but state-dict names/layout differ.
@@ -92,3 +108,5 @@ separable DeepLab head convolutions remain research decisions.
   <https://github.com/NVlabs/SegFormer/blob/master/local_configs/segformer/B1/segformer.b1.512x512.ade.160k.py>
 - NVlabs SegFormer decoder head:
   <https://github.com/NVlabs/SegFormer/blob/master/mmseg/models/decode_heads/segformer_head.py>
+- NVlabs SegFormer B1 model configuration:
+  <https://github.com/NVlabs/SegFormer/blob/master/local_configs/segformer/B1/segformer.b1.512x512.ade.160k.py>

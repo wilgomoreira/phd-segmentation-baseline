@@ -1,0 +1,85 @@
+# Versioned four-condition SegFormer-B1 pilot using the NVlabs reference decoder profile.
+schema: 1
+name: pastis_run01_segformer_b1_nvlabs_decoder256_factorial
+project_root: /home/wilgomoreira/workspace/partilha_remota/projects/phd-segmentation-baselines
+dataset_config: configs/datasets/pastis_run_01.yaml
+model_configs:
+  segformer_b1: configs/models/segformer_b1_nvlabs.yaml
+pretrained_manifest: configs/pretrained/pastis_imagenet_encoders.json
+output_root: /home/wilgomoreira/workspace/partilha_remota/experiments/phd-segmentation-baselines/pastis_run01_segformer_b1_nvlabs_decoder256
+seed: 2401
+deterministic: true
+device: auto
+num_classes: 19
+epochs: 100
+data:
+  batch_size: 16
+  num_workers: 0
+  pin_memory: false
+loss:
+  name: CrossEntropyLoss
+  ignore_index: 19
+optimizer:
+  name: AdamW
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+early_stopping:
+  enabled: true
+  patience: 15
+  min_delta: 0.001
+schedulers:
+  no_scheduler:
+    name: none
+    parameters: {}
+  polynomial:
+    name: polynomial
+    parameters:
+      total_iters: 100
+      power: 0.9
+initializations:
+  scratch:
+    kind: scratch
+  deeplab_pretrained:
+    kind: imagenet_encoder
+    source: torchvision_resnet50_imagenet1k_v2
+  segformer_pretrained:
+    kind: imagenet_encoder
+    source: nvidia_mit_b1_imagenet1k
+variants:
+  segformer_b1:
+    scratch_no_scheduler:
+      initialization: scratch
+      scheduler: no_scheduler
+      action: run
+    scratch_polynomial:
+      initialization: scratch
+      scheduler: polynomial
+      action: run
+    pretrained_no_scheduler:
+      initialization: segformer_pretrained
+      scheduler: no_scheduler
+      action: run
+    pretrained_polynomial:
+      initialization: segformer_pretrained
+      scheduler: polynomial
+      action: run
+implementation_snapshot_files:
+- src/models/segformer.py
+- src/models/factory.py
+- src/models/pretrained.py
+- src/training/config.py
+- src/training/trainer.py
+- src/training/runner.py
+- scripts/run_pastis_factorial_pilot.py
+- scripts/run_pastis_segformer_nvlabs256_sequence.py
+- configs/models/segformer_b1.yaml
+- configs/models/segformer_b1_nvlabs.yaml
+- configs/pilots/pastis_run01_segformer_b1_nvlabs256.yaml
+- configs/datasets/pastis_run_01.yaml
+- configs/normalization/pastis_run_01.json
+- configs/pretrained/pastis_imagenet_encoders.json
+- tests/test_models.py
+- tests/test_pretrained_initialization.py
+- tests/test_pastis_segformer_nvlabs256.py
+- docs/model_architectures.md
+- docs/pastis_segformer_nvlabs_decoder256.md

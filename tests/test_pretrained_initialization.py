@@ -96,8 +96,17 @@ def _segformer_hf_state(model):
     return source
 
 
-def test_segformer_encoder_key_mapping_is_complete_and_decoder_remains_random():
-    model = SegFormerB1(num_classes=19, in_channels=10)
+@pytest.mark.parametrize("decoder_profile,decoder_channels", [
+    ("legacy_128", 128),
+    ("nvlabs_reference", 256),
+])
+def test_segformer_encoder_key_mapping_is_complete_and_decoder_remains_random(
+    decoder_profile, decoder_channels,
+):
+    model = SegFormerB1(
+        num_classes=19, in_channels=10, decoder_channels=decoder_channels,
+        decoder_profile=decoder_profile,
+    )
     decoder_before = {name: parameter.detach().clone() for name, parameter in model.decoder.named_parameters()}
     source = _segformer_hf_state(model)
     mapped = _map_segformer(model, source)

@@ -87,6 +87,78 @@ def test_model_yaml_is_applied_and_inconsistent_values_rejected():
         build_model(bad, num_classes=4, in_channels=10)
 
 
+def test_nvlabs_reference_decoder_profile_matches_head_topology_and_order():
+    model = SegFormerB1(
+        num_classes=19, in_channels=10, decoder_hidden_size=256,
+        decoder_channels=256, decoder_profile="nvlabs_reference",
+    )
+    assert model.decoder.profile == "nvlabs_reference"
+    assert model.decoder.embed_dim == 256
+    assert model.decoder.channels == 256
+    assert [projection.out_features for projection in model.decoder.projections] == [256] * 4
+    assert model.decoder.concatenation_order == ("C4", "C3", "C2", "C1")
+    assert model.decoder.fuse[0].in_channels == 1024
+    assert model.decoder.fuse[0].out_channels == 256
+    assert isinstance(model.decoder.fuse[1], torch.nn.SyncBatchNorm)
+    assert isinstance(model.decoder.fuse[2], torch.nn.ReLU)
+    assert model.decoder.fuse[3].p == 0.1
+    assert model.decoder.classifier.in_channels == 256
+    assert model.decoder.classifier.out_channels == 19
+
+    # Distinct projection biases make the concatenation order observable.
+    for stage, projection in enumerate(model.decoder.projections, start=1):
+        torch.nn.init.zeros_(projection.weight)
+        torch.nn.init.constant_(projection.bias, stage)
+    captured = {}
+    def capture_fusion_input(_module, args):
+        captured["fusion_input"] = args[0].detach().clone()
+    hook = model.decoder.fuse[0].register_forward_pre_hook(capture_fusion_input)
+    features = [
+        torch.zeros(1, channels, size, size)
+        for channels, size in ((64, 16), (128, 8), (320, 4), (512, 2))
+    ]
+    model.decoder.eval()
+    with torch.no_grad():
+        decoded = model.decoder(features)
+    hook.remove()
+    fusion_input = captured["fusion_input"]
+    assert decoded.shape == (1, 19, 16, 16)
+    assert torch.all(fusion_input[:, :256] == 4)
+    assert torch.all(fusion_input[:, 256:512] == 3)
+    assert torch.all(fusion_input[:, 512:768] == 2)
+    assert torch.all(fusion_input[:, 768:] == 1)
+
+
+def test_nvlabs_reference_decoder_accepts_10_band_training_forward_and_backward():
+    torch.manual_seed(2401)
+    model = SegFormerB1(
+        num_classes=19, in_channels=10, decoder_hidden_size=256,
+        decoder_channels=256, decoder_profile="nvlabs_reference",
+    ).train()
+    images = torch.randn(2, 10, 64, 64, requires_grad=True)
+    target = torch.randint(0, 19, (2, 64, 64))
+    logits = model(images)
+    assert logits.shape == (2, 19, 64, 64)
+    assert torch.isfinite(logits).all()
+    torch.nn.functional.cross_entropy(logits, target).backward()
+    assert images.grad is not None and torch.isfinite(images.grad).all()
+    gradients = [parameter.grad for parameter in model.parameters() if parameter.grad is not None]
+    assert gradients and all(torch.isfinite(gradient).all() for gradient in gradients)
+    assert model.decoder.fuse[0].weight.grad is not None
+
+
+def test_reference_aligned_model_yaml_is_applied():
+    with open("configs/models/segformer_b1_nvlabs.yaml", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    model = build_model(config, num_classes=19, in_channels=10)
+    assert model.decoder_profile == "nvlabs_reference"
+    assert model.decoder.channels == model.decoder.fuse[0].out_channels == 256
+    assert model.decoder.classifier.in_channels == 256
+    with pytest.raises(ValueError, match="requires embed_dim=256"):
+        SegFormerB1(num_classes=19, in_channels=10, decoder_channels=128,
+                    decoder_profile="nvlabs_reference")
+
+
 def test_deeplab_yaml_applies_decoder_and_aspp_settings():
     with open("configs/models/deeplabv3plus.yaml", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)

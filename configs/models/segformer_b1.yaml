@@ -14,4 +14,4 @@ mlp_ratio: 4
 norm_eps: 1.0e-6
 drop_path_rate: 0.1
 decoder_hidden_size: 256  # Per-level MLP projection dimension (official embed_dim).
-decoder_channels: 128  # Official fusion/head width for the B1 ADE configuration.
+decoder_channels: 128  # Historical project fusion width; retained for the original factorial artifacts.

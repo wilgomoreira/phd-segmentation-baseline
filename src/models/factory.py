@@ -34,7 +34,8 @@ def build_model(config: dict[str, Any], *, num_classes: int, in_channels: int):
         raise ValueError("training num_classes conflicts with model configuration")
     if key in {"segformerb1", "segformer"}:
         allowed = common | {"depths", "hidden_sizes", "num_heads", "sr_ratios", "mlp_ratio",
-                            "decoder_hidden_size", "decoder_channels", "norm_eps", "drop_path_rate"}
+                            "decoder_hidden_size", "decoder_channels", "decoder_profile",
+                            "norm_eps", "drop_path_rate"}
         unknown = set(config) - allowed
         if unknown:
             raise ValueError(f"unsupported SegFormer configuration keys: {sorted(unknown)}")
@@ -49,6 +50,7 @@ def build_model(config: dict[str, Any], *, num_classes: int, in_channels: int):
             pretrained=bool(config.get("pretrained", False)),
             decoder_hidden_size=config.get("decoder_hidden_size", 256),
             decoder_channels=config.get("decoder_channels", 128),
+            decoder_profile=config.get("decoder_profile", "legacy_128"),
             norm_eps=float(config.get("norm_eps", 1e-6)),
             drop_path_rate=float(config.get("drop_path_rate", 0.1)),
         )

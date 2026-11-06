@@ -96,7 +96,7 @@ def _write_incomplete_run(root, config, *, latest_epoch=3):
     (child / "resolved_configuration.json").write_text(json.dumps(resolved), encoding="utf-8")
     (child / "run_metadata.json").write_text("{}", encoding="utf-8")
     metrics = [
-        {"epoch": epoch, "validation": {"mIoU": 0.4}}
+        {"epoch": epoch, "validation": {"mIoU": 0.3 if epoch < 2 else 0.4}}
         for epoch in range(latest_epoch + 1)
     ]
     (child / "metrics.jsonl").write_text(
@@ -172,7 +172,7 @@ def test_launcher_skips_only_complete_run_with_matching_provenance(tmp_path, mon
     (child / "resolved_configuration.json").write_text(json.dumps(resolved), encoding="utf-8")
     (child / "run_metadata.json").write_text("{}", encoding="utf-8")
     rows = [
-        {"epoch": epoch, "validation": {"mIoU": 0.4}}
+        {"epoch": epoch, "validation": {"mIoU": 0.3 if epoch < 90 else 0.4}}
         for epoch in range(100)
     ]
     (child / "metrics.jsonl").write_text(

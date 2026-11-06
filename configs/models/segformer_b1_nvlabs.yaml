@@ -1,0 +1,20 @@
+# Reference-aligned NVlabs SegFormerHead profile for the run-01 comparison.
+# The historical 128-channel decoder remains in segformer_b1.yaml unchanged.
+name: segformer_b1
+architecture: SegFormer
+backbone: MiT-B1
+in_channels_by_dataset:
+  pastis: 10
+  five_billion_pixels: 4
+num_classes: null
+pretrained: false
+depths: [2, 2, 2, 2]
+hidden_sizes: [64, 128, 320, 512]
+num_heads: [1, 2, 5, 8]
+sr_ratios: [8, 4, 2, 1]
+mlp_ratio: 4
+norm_eps: 1.0e-6
+drop_path_rate: 0.1
+decoder_profile: nvlabs_reference
+decoder_hidden_size: 256  # Per-stage MLP embedding dimension.
+decoder_channels: 256  # NVlabs SegFormerHead fusion output width.
