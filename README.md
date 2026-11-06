@@ -37,3 +37,19 @@ readable table at [`results/baseline_metrics.csv`](results/baseline_metrics.csv)
 
 Dataset data, trained checkpoints, and generated run outputs are not stored in
 this repository. See the protocol documents before reproducing the results.
+
+## Dataset references
+
+- **PASTIS:** Vivien Sainte Fare Garnot and Loïc Landrieu, “Panoptic
+  Segmentation of Satellite Image Time Series with Convolutional Temporal
+  Attention Networks,” *ICCV*, 2021. [Paper](https://openaccess.thecvf.com/content/ICCV2021/papers/Garnot_Panoptic_Segmentation_of_Satellite_Image_Time_Series_With_Convolutional_Temporal_ICCV_2021_paper.pdf) ·
+  [Official benchmark repository and dataset instructions](https://github.com/VSainteuf/pastis-benchmark).
+- **LandCover.ai:** Adrian Boguszewski et al., “LandCover.ai: Dataset for
+  Automatic Mapping of Buildings, Woodlands, Water and Roads from Aerial
+  Imagery,” *CVPR Workshops*, 2021, pp. 1102–1110. [Paper](https://openaccess.thecvf.com/content/CVPR2021W/EarthVision/papers/Boguszewski_LandCover.ai_Dataset_for_Automatic_Mapping_of_Buildings_Woodlands_Water_and_CVPRW_2021_paper.pdf) ·
+  [Dataset website](https://landcover.ai/).
+
+The results here use a single-date semantic-segmentation adaptation of PASTIS
+and a geographically grouped evaluation protocol for LandCover.ai; consult the
+project protocol and results documents for those adaptations. Cite the original
+dataset publications when using the datasets.
